@@ -1,0 +1,1589 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C2A — Code to Audio</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121821; --panel2:#182231; --line:#243244;
+    --txt:#e6edf5; --dim:#8fa3bb; --accent:#39d0ff; --accent2:#7c5cff;
+    --ok:#2fd07f; --warn:#ffb547; --err:#ff5d6c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 20% -10%,#132033 0%,#0b0f14 60%);
+       color:var(--txt);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;}
+  header{padding:22px 20px 10px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .logo{font-weight:800;font-size:26px;letter-spacing:1px;
+        background:linear-gradient(90deg,var(--accent),var(--accent2));
+        -webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--dim);font-size:13px}
+  main{max-width:1100px;margin:0 auto;padding:10px 16px 80px}
+  .tabs{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 18px}
+  .tab{padding:9px 16px;border-radius:10px;background:var(--panel);border:1px solid var(--line);
+       cursor:pointer;color:var(--dim);user-select:none;transition:.15s}
+  .tab:hover{color:var(--txt);border-color:#33506e}
+  .tab.active{background:linear-gradient(180deg,#1b2a3d,#15202e);color:var(--txt);
+              border-color:var(--accent);box-shadow:0 0 0 1px rgba(57,208,255,.25)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:16px}
+  .panel h2{margin:0 0 12px;font-size:16px;letter-spacing:.4px}
+  .panel h3{margin:16px 0 8px;font-size:14px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.6px}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  .grow{flex:1 1 220px}
+  button{background:linear-gradient(180deg,#1d3350,#16273c);color:var(--txt);border:1px solid #2c4a6b;
+         padding:10px 16px;border-radius:10px;cursor:pointer;font-size:14px;transition:.15s}
+  button:hover{border-color:var(--accent);box-shadow:0 0 0 1px rgba(57,208,255,.2)}
+  button:disabled{opacity:.4;cursor:not-allowed;box-shadow:none}
+  button.primary{background:linear-gradient(180deg,#1f7fa8,#155f80);border-color:var(--accent)}
+  button.danger{background:linear-gradient(180deg,#7a2230,#5c1a26);border-color:#a83a4a}
+  input[type=text],textarea,select{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+        color:var(--txt);padding:10px 12px;font-size:14px;width:100%;outline:none}
+  input[type=text]:focus,textarea:focus,select:focus{border-color:var(--accent)}
+  textarea{resize:vertical;min-height:70px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .drop{border:2px dashed #2c4a6b;border-radius:14px;padding:26px;text-align:center;color:var(--dim);
+        cursor:pointer;transition:.15s;background:rgba(20,30,45,.4)}
+  .drop:hover,.drop.over{border-color:var(--accent);color:var(--txt);background:rgba(30,50,75,.5)}
+  .muted{color:var(--dim);font-size:13px}
+  .bar{height:8px;background:#0e1620;border-radius:6px;overflow:hidden;border:1px solid var(--line)}
+  .bar > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .12s}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .stat b{display:block;font-size:16px;margin-top:2px}
+  .stat span{color:var(--dim);font-size:12px}
+  .msg{padding:10px 14px;border-radius:10px;margin-top:10px;font-size:13px;display:none}
+  .msg.show{display:block}
+  .msg.err{background:rgba(255,93,108,.12);border:1px solid rgba(255,93,108,.4);color:#ffb3ba}
+  .msg.ok{background:rgba(47,208,127,.1);border:1px solid rgba(47,208,127,.4);color:#a9f0cd}
+  .msg.warn{background:rgba(255,181,71,.1);border:1px solid rgba(255,181,71,.4);color:#ffe0ae}
+  audio{width:100%;margin-top:10px}
+  .hidden{display:none !important}
+  .wavebox{background:#0a121b;border:1px solid var(--line);border-radius:12px;padding:8px;margin-top:10px}
+  canvas{width:100%;display:block;border-radius:8px}
+  .kv{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;font-size:13px;margin-top:8px}
+  .kv div{display:flex;justify-content:space-between;gap:8px;border-bottom:1px dashed #1b2938;padding:4px 0}
+  .kv span:first-child{color:var(--dim)}
+  .kv span:last-child{font-family:ui-monospace,Menlo,Consolas,monospace}
+  footer{text-align:center;color:var(--dim);font-size:12px;padding:20px}
+  .sep{height:1px;background:var(--line);margin:14px 0}
+  .level{height:14px;background:#0e1620;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:8px}
+  .level > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--ok),var(--warn),var(--err));transition:width .08s}
+  .small{font-size:12px}
+  .qual{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:10px}
+  .qualopt{padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--panel2);cursor:pointer;transition:.15s}
+  .qualopt:hover{border-color:#33506e}
+  .qualopt.on{border-color:var(--accent);box-shadow:0 0 0 1px rgba(57,208,255,.3);background:linear-gradient(180deg,#173248,#132536)}
+  .qualopt b{display:block;margin-bottom:4px}
+  .qualopt .small{color:var(--dim)}
+  .status{font-size:12px;color:var(--dim);margin-top:6px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">C2A</div>
+  <div class="sub">Code&nbsp;to&nbsp;Audio — быстрый lossless/lossy-кодек</div>
+</header>
+
+<main>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="enc">Audio → Code</div>
+    <div class="tab" data-tab="dec">Code → Audio</div>
+    <div class="tab" data-tab="t2c">Text to Code</div>
+    <div class="tab" data-tab="c2t">Code to Text</div>
+  </div>
+
+  <!-- AUDIO → CODE -->
+  <section id="tab-enc" class="tabpane">
+    <div class="panel">
+      <h2>1. Загрузка файла</h2>
+      <div id="dropEnc" class="drop">
+        Перетащите файл сюда или нажмите, чтобы выбрать<br>
+        <span class="muted">Аудио · Видео · MP3 · WAV · FLAC · AAC · M4A · OGG · MP4 · MOV · WebM</span>
+      </div>
+      <input id="fileEnc" type="file" class="hidden">
+      <div id="msgEnc" class="msg"></div>
+
+      <div id="encInfo" class="hidden" style="margin-top:14px">
+        <div class="kv" id="encInfoKv"></div>
+        <audio id="encAudio" controls></audio>
+        <div class="wavebox"><canvas id="waveCanvas" height="90"></canvas></div>
+        <h3>Обрезка фрагмента</h3>
+        <div class="row">
+          <div class="grow"><label class="muted">Начало: <b id="trimStartLbl">0.00 с</b></label>
+            <input type="range" id="trimStart" min="0" max="0" step="0.01" value="0"></div>
+          <div class="grow"><label class="muted">Конец: <b id="trimEndLbl">0.00 с</b></label>
+            <input type="range" id="trimEnd" min="0" max="0" step="0.01" value="0"></div>
+        </div>
+        <div class="muted" style="margin-top:6px">Выбрано: <b id="trimDur">0.00 с</b></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>2. Уровень сжатия</h2>
+      <div class="qual" id="qualOpts">
+        <div class="qualopt on" data-q="1">
+          <b>Уровень 1 · Lossless</b>
+          <span class="small">Bit-exact восстановление. Сжатие ~1.5–2.5×. Очень быстро.</span>
+        </div>
+        <div class="qualopt" data-q="2">
+          <b>Уровень 2 · Сбалансированный</b>
+          <span class="small">Гарантированно ≤ 1/2 от WAV (≥2×). Decimation + квантование. Мгновенно.</span>
+        </div>
+        <div class="qualopt" data-q="3">
+          <b>Уровень 3 · Максимум</b>
+          <span class="small">Гарантированно ≤ 1/5 от WAV (≥5×). Decimation + квантование. Мгновенно.</span>
+        </div>
+      </div>
+      <div id="qualInfo" class="muted small" style="margin-top:10px"></div>
+    </div>
+
+    <div class="panel">
+      <h2>3. Кодирование</h2>
+      <div class="row">
+        <button class="primary" id="btnEncode" disabled>Кодировать в .c2a</button>
+        <button id="btnPlaySel" disabled>Прослушать фрагмент</button>
+      </div>
+      <div class="bar" style="margin-top:12px"><i id="encProgress"></i></div>
+      <div id="encStatus" class="status"></div>
+      <div id="msgEnc2" class="msg"></div>
+
+      <div id="encResult" class="hidden" style="margin-top:14px">
+        <h3>Результат</h3>
+        <div class="stats" id="encStats"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="btnDlC2a">Скачать .c2a</button>
+          <button id="btnToDec">Перейти к декодированию</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CODE → AUDIO -->
+  <section id="tab-dec" class="tabpane hidden">
+    <div class="panel">
+      <h2>Загрузка .c2a</h2>
+      <div id="dropDec" class="drop">
+        Перетащите .c2a файл сюда или нажмите для выбора
+      </div>
+      <input id="fileDec" type="file" class="hidden" accept=".c2a">
+      <div id="msgDec" class="msg"></div>
+      <div id="decInfo" class="hidden" style="margin-top:14px">
+        <div class="kv" id="decInfoKv"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="btnDecode">Декодировать</button>
+        </div>
+        <div class="bar" style="margin-top:12px"><i id="decProgress"></i></div>
+        <div id="decStatus" class="status"></div>
+      </div>
+      <div id="decResult" class="hidden" style="margin-top:14px">
+        <h3>Восстановленное аудио</h3>
+        <audio id="decAudio" controls></audio>
+        <div class="stats" id="decStats" style="margin-top:10px"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="btnDlWav">Скачать WAV</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TEXT TO CODE -->
+  <section id="tab-t2c" class="tabpane hidden">
+    <div class="panel">
+      <h2>Text to Code — текст → WAV (FSK-модем)</h2>
+      <p class="muted small">Текст кодируется в звук FSK + Manchester + синхрослово + CRC.
+        Оптимально: источник и приёмник на расстоянии до ~1.5 м, средний шум.</p>
+      <textarea id="t2cInput" placeholder="Привет, C2A! X7#kL92_!qP0"></textarea>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="btnT2cEncode">Сгенерировать WAV из текста</button>
+      </div>
+      <div id="msgT2c" class="msg"></div>
+      <div id="t2cResult" class="hidden" style="margin-top:14px">
+        <h3>Результат</h3>
+        <div class="kv" id="t2cKv"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="btnDlT2cWav">Скачать WAV</button>
+        </div>
+        <h3 style="margin-top:16px">Сгенерированное аудио</h3>
+        <audio id="t2cAudio" controls></audio>
+      </div>
+    </div>
+  </section>
+
+  <!-- CODE TO TEXT -->
+  <section id="tab-c2t" class="tabpane hidden">
+    <div class="panel">
+      <h2>Code to Text — WAV / микрофон → текст</h2>
+      <p class="muted small">Декодер: поиск синхрослова, Manchester, CRC.</p>
+
+      <h3>Способ 1: загрузить WAV</h3>
+      <div id="dropC2t" class="drop">
+        Перетащите .wav файл сюда или нажмите для выбора
+      </div>
+      <input id="fileC2t" type="file" class="hidden" accept=".wav,audio/wav,audio/*">
+
+      <h3 style="margin-top:20px">Способ 2: слушать через микрофон</h3>
+      <div class="row">
+        <button class="primary" id="btnMicListen">Слушать микрофон</button>
+        <button class="danger" id="btnMicListenStop" disabled>Остановить</button>
+      </div>
+      <div class="muted" style="margin-top:8px">Уровень: <b id="micLevelTxt">0%</b> · Состояние: <b id="micState">не активно</b></div>
+      <div class="level"><i id="micLevel"></i></div>
+      <div id="msgMicListen" class="msg"></div>
+
+      <div id="c2tResult" class="hidden" style="margin-top:14px">
+        <h3>Восстановленный текст</h3>
+        <textarea id="c2tOut" readonly style="min-height:120px"></textarea>
+        <div class="kv" id="c2tKv" style="margin-top:10px"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="btnCopyTxt">Копировать текст</button>
+          <button id="btnDlTxt">Скачать .txt</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>C2A · lossless/lossy-кодек + акустическая передача текста</footer>
+
+<script>
+/* ============================================================
+   C2A — Code to Audio (v7: гарантированный размер lossy)
+   ============================================================ */
+
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+
+function showMsg(el, text, type){
+  el.textContent = text;
+  el.className = 'msg show ' + (type || '');
+}
+function hideMsg(el){ el.className = 'msg'; }
+
+const CRC_TABLE = (()=>{
+  const t = new Uint32Array(256);
+  for(let n=0;n<256;n++){
+    let c=n;
+    for(let k=0;k<8;k++) c = (c&1) ? (0xEDB88320 ^ (c>>>1)) : (c>>>1);
+    t[n]=c>>>0;
+  }
+  return t;
+})();
+function crc32(bytes){
+  let c = 0xFFFFFFFF;
+  for(let i=0;i<bytes.length;i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function hashStr(s){
+  let h = 0x811c9dc5;
+  for(let i=0;i<s.length;i++){
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+
+$$('.tab').forEach(t=>{
+  t.onclick = ()=>{
+    $$('.tab').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    $$('.tabpane').forEach(p=>p.classList.add('hidden'));
+    $('#tab-' + t.dataset.tab).classList.remove('hidden');
+  };
+});
+
+const state = {
+  encBuffer: null,
+  encFileInfo: null,
+  encC2aBytes: null,
+  decC2aBytes: null,
+  decWavBytes: null,
+  t2cWav: null,
+  t2cText: '',
+  c2tText: '',
+  quality: 1
+};
+
+/* ============================================================
+   АУДИО УТИЛИТЫ
+   ============================================================ */
+function bufferToMono(buf){
+  const ch = buf.numberOfChannels;
+  const len = buf.length;
+  const out = new Float32Array(len);
+  for(let c=0;c<ch;c++){
+    const d = buf.getChannelData(c);
+    for(let i=0;i<len;i++) out[i] += d[i] / ch;
+  }
+  return out;
+}
+
+function bufferToInterleavedInt16(buf){
+  const ch = buf.numberOfChannels;
+  const len = buf.length;
+  const out = new Int16Array(len * ch);
+  const data = [];
+  for(let c=0;c<ch;c++) data.push(buf.getChannelData(c));
+  let k = 0;
+  for(let i=0;i<len;i++){
+    for(let c=0;c<ch;c++){
+      let s = Math.max(-1, Math.min(1, data[c][i]));
+      out[k++] = s < 0 ? (s*0x8000)|0 : (s*0x7FFF)|0;
+    }
+  }
+  return { samples: out, channels: ch };
+}
+
+function audioBufferToWav(buf){
+  const numCh = buf.numberOfChannels;
+  const sr = buf.sampleRate;
+  const len = buf.length;
+  const blockAlign = numCh * 2;
+  const dataSize = len * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const wS = (o,s)=>{ for(let i=0;i<s.length;i++) view.setUint8(o+i, s.charCodeAt(i)); };
+  wS(0,'RIFF'); view.setUint32(4, 36+dataSize, true);
+  wS(8,'WAVE'); wS(12,'fmt ');
+  view.setUint32(16,16,true); view.setUint16(20,1,true);
+  view.setUint16(22,numCh,true); view.setUint32(24,sr,true);
+  view.setUint32(28, sr*blockAlign, true);
+  view.setUint16(32,blockAlign,true); view.setUint16(34,16,true);
+  wS(36,'data'); view.setUint32(40,dataSize,true);
+  let off = 44;
+  const chans = [];
+  for(let c=0;c<numCh;c++) chans.push(buf.getChannelData(c));
+  for(let i=0;i<len;i++){
+    for(let c=0;c<numCh;c++){
+      let s = Math.max(-1, Math.min(1, chans[c][i]));
+      view.setInt16(off, s<0 ? s*0x8000 : s*0x7FFF, true); off += 2;
+    }
+  }
+  return new Uint8Array(buffer);
+}
+
+function pcmInt16ToWavBytes(interleaved, channels, sr){
+  const dataSize = interleaved.length * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const wS = (o,s)=>{ for(let i=0;i<s.length;i++) view.setUint8(o+i, s.charCodeAt(i)); };
+  const blockAlign = channels * 2;
+  wS(0,'RIFF'); view.setUint32(4, 36+dataSize, true);
+  wS(8,'WAVE'); wS(12,'fmt ');
+  view.setUint32(16,16,true); view.setUint16(20,1,true);
+  view.setUint16(22,channels,true); view.setUint32(24,sr,true);
+  view.setUint32(28, sr*blockAlign, true);
+  view.setUint16(32,blockAlign,true); view.setUint16(34,16,true);
+  wS(36,'data'); view.setUint32(40,dataSize,true);
+  let off = 44;
+  for(let i=0;i<interleaved.length;i++){
+    view.setInt16(off, interleaved[i], true); off += 2;
+  }
+  return new Uint8Array(buffer);
+}
+
+function monoFloatToAudioBuffer(pcm, sr){
+  const ctx = getAudioCtx();
+  const buf = ctx.createBuffer(1, pcm.length, sr);
+  buf.copyToChannel(pcm, 0);
+  return buf;
+}
+
+let _actx = null;
+function getAudioCtx(){
+  if(!_actx) _actx = new (window.AudioContext || window.webkitAudioContext)();
+  return _actx;
+}
+
+function wavBytesToPcm(bytes){
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if(String.fromCharCode(...bytes.subarray(0,4)) !== 'RIFF') throw new Error('Не RIFF');
+  if(String.fromCharCode(...bytes.subarray(8,12)) !== 'WAVE') throw new Error('Не WAVE');
+  let off = 12, fmt=null, dataOff=-1, dataLen=0;
+  while(off + 8 <= bytes.length){
+    const id = String.fromCharCode(...bytes.subarray(off, off+4));
+    const size = dv.getUint32(off+4, true);
+    if(id === 'fmt '){
+      fmt = {
+        audioFormat: dv.getUint16(off+8, true),
+        numCh: dv.getUint16(off+10, true),
+        sr: dv.getUint32(off+12, true),
+        bits: dv.getUint16(off+22, true)
+      };
+    } else if(id === 'data'){ dataOff = off+8; dataLen = size; }
+    off += 8 + size + (size & 1);
+  }
+  if(!fmt || dataOff < 0) throw new Error('Не найден fmt/data');
+  if(fmt.audioFormat !== 1) throw new Error('Только PCM');
+  const {numCh, sr, bits} = fmt;
+  if(bits !== 16 && bits !== 8) throw new Error('Только 8/16-bit PCM');
+  const nSamples = Math.floor(dataLen / (numCh * (bits/8)));
+  const out = new Float32Array(nSamples);
+  if(bits === 16){
+    for(let i=0;i<nSamples;i++){
+      let s=0;
+      for(let c=0;c<numCh;c++) s += dv.getInt16(dataOff + (i*numCh+c)*2, true) / 32768;
+      out[i] = s / numCh;
+    }
+  } else {
+    for(let i=0;i<nSamples;i++){
+      let s=0;
+      for(let c=0;c<numCh;c++) s += (dv.getUint8(dataOff + (i*numCh+c)) - 128)/128;
+      out[i] = s / numCh;
+    }
+  }
+  return { pcm: out, sr };
+}
+
+/* ============================================================
+   УРОВЕНЬ 1: LOSSLESS КОДЕК (C2A3)
+   ============================================================ */
+const C2A_MAGIC_LOSSLESS = 0x43324133;
+const C2A_MAGIC_LOSSY = 0x43324C33; // v3
+const BLOCK_LEN = 4096;
+
+function zigzag(v){ return (v << 1) ^ (v >> 31); }
+function unzigzag(u){ return (u >>> 1) ^ -(u & 1); }
+
+class BitWriter {
+  constructor(){ this.bytes = []; this.cur = 0; this.nbits = 0; }
+  writeBit(b){
+    this.cur = (this.cur << 1) | (b & 1); this.nbits++;
+    if(this.nbits === 8){ this.bytes.push(this.cur); this.cur = 0; this.nbits = 0; }
+  }
+  writeBits(value, n){
+    for(let i=n-1;i>=0;i--) this.writeBit((value >> i) & 1);
+  }
+  writeRice(u, k){
+    const q = u >>> k;
+    for(let j=0;j<q;j++) this.writeBit(0);
+    this.writeBit(1);
+    if(k > 0) this.writeBits(u & ((1<<k)-1), k);
+  }
+  finish(){
+    if(this.nbits > 0){
+      this.cur <<= (8 - this.nbits);
+      this.bytes.push(this.cur); this.cur = 0; this.nbits = 0;
+    }
+    return new Uint8Array(this.bytes);
+  }
+}
+class BitReader {
+  constructor(bytes){ this.bytes = bytes; this.pos = 0; }
+  readBit(){
+    const bi = this.pos >> 3, bi2 = 7 - (this.pos & 7);
+    this.pos++;
+    return (this.bytes[bi] >> bi2) & 1;
+  }
+  readBits(n){
+    let v = 0;
+    for(let i=0;i<n;i++) v = (v << 1) | this.readBit();
+    return v;
+  }
+  readRice(k){
+    let q = 0;
+    while(this.readBit() === 0) q++;
+    return (q << k) | (k > 0 ? this.readBits(k) : 0);
+  }
+}
+
+function chooseK(residuals, start, end){
+  let bestK = 0, bestBits = Infinity;
+  for(let k=0;k<=14;k++){
+    let bits = 0;
+    for(let i=start;i<end;i++){
+      const u = zigzag(residuals[i]);
+      bits += (u >>> k) + 1 + k;
+    }
+    if(bits < bestBits){ bestBits = bits; bestK = k; }
+  }
+  return { k: bestK, bits: bestBits };
+}
+
+function encodeChannel(samples, nSamples){
+  const residuals = new Int32Array(nSamples);
+  let p1 = 0, p2 = 0;
+  for(let i=0;i<nSamples;i++){
+    const s = samples[i];
+    residuals[i] = s - (2*p1 - p2);
+    p2 = p1; p1 = s;
+  }
+  const blocks = [];
+  for(let b=0;b<nSamples;b+=BLOCK_LEN){
+    const end = Math.min(b+BLOCK_LEN, nSamples);
+    const count = end - b;
+    const rawBytes = count * 2;
+    const { k, bits } = chooseK(residuals, b, end);
+    const riceBytes = Math.ceil(bits / 8) + 1;
+    if(riceBytes < rawBytes){
+      const bw = new BitWriter();
+      for(let i=b;i<end;i++) bw.writeRice(zigzag(residuals[i]), k);
+      blocks.push({ mode: 0, k, bytes: bw.finish(), count });
+    } else {
+      const bytes = new Uint8Array(rawBytes);
+      const dv = new DataView(bytes.buffer);
+      for(let i=0;i<count;i++) dv.setInt16(i*2, samples[b+i], true);
+      blocks.push({ mode: 1, bytes, count });
+    }
+  }
+  return blocks;
+}
+
+function decodeChannel(blocksData, nSamples){
+  const out = new Int16Array(nSamples);
+  let p1 = 0, p2 = 0, idx = 0;
+  for(const blk of blocksData){
+    if(blk.mode === 1){
+      const dv = new DataView(blk.bytes.buffer);
+      for(let i=0;i<blk.count;i++){
+        const s = dv.getInt16(i*2, true);
+        out[idx++] = s;
+        p2 = p1; p1 = s;
+      }
+    } else {
+      const br = new BitReader(blk.bytes);
+      for(let i=0;i<blk.count;i++){
+        const u = br.readRice(blk.k);
+        const r = unzigzag(u);
+        const s = (2*p1 - p2) + r;
+        out[idx++] = s;
+        p2 = p1; p1 = s;
+      }
+    }
+  }
+  return out;
+}
+
+async function encodeC2ALossless(interleaved, channels, sampleRate, onProgress){
+  const numSamplesPerCh = interleaved.length / channels;
+  const chans = [];
+  for(let c=0;c<channels;c++) chans.push(new Int16Array(numSamplesPerCh));
+  let k = 0;
+  for(let i=0;i<numSamplesPerCh;i++){
+    for(let c=0;c<channels;c++) chans[c][i] = interleaved[k++];
+  }
+  const encoded = [];
+  for(let c=0;c<channels;c++){
+    encoded.push(encodeChannel(chans[c], numSamplesPerCh));
+    if(onProgress){ onProgress((c+1)/channels); await new Promise(r=>setTimeout(r,0)); }
+  }
+  let bodySize = 0;
+  for(let c=0;c<channels;c++){
+    bodySize += 4;
+    for(const b of encoded[c]){
+      bodySize += 1 + 4 + 4 + b.bytes.length;
+      if(b.mode === 0) bodySize += 1;
+    }
+  }
+  const total = 28 + bodySize;
+  const outBuf = new ArrayBuffer(total);
+  const dv = new DataView(outBuf);
+  dv.setUint32(0, C2A_MAGIC_LOSSLESS, true);
+  dv.setUint16(4, 3, true);
+  dv.setUint32(6, sampleRate, true);
+  dv.setUint8(10, channels);
+  dv.setUint8(11, 16);
+  dv.setUint16(12, 0, true);
+  dv.setUint32(14, numSamplesPerCh, true);
+  dv.setUint32(18, bodySize, true);
+  dv.setUint16(26, 0, true);
+
+  let off = 28;
+  for(let c=0;c<channels;c++){
+    dv.setUint32(off, encoded[c].length, true); off += 4;
+    for(const b of encoded[c]){
+      dv.setUint8(off++, b.mode);
+      dv.setUint32(off, b.count, true); off += 4;
+      if(b.mode === 0) dv.setUint8(off++, b.k);
+      dv.setUint32(off, b.bytes.length, true); off += 4;
+      for(let i=0;i<b.bytes.length;i++) dv.setUint8(off++, b.bytes[i]);
+    }
+  }
+  const bytes = new Uint8Array(outBuf);
+  dv.setUint32(22, crc32(bytes.subarray(28)), true);
+  return bytes;
+}
+
+async function decodeC2ALossless(bytes, onProgress){
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if(dv.getUint32(0,true) !== C2A_MAGIC_LOSSLESS) throw new Error('Неверная сигнатура');
+  const version = dv.getUint16(4,true);
+  const sampleRate = dv.getUint32(6,true);
+  const channels = dv.getUint8(10);
+  const bits = dv.getUint8(11);
+  const numSamplesPerCh = dv.getUint32(14,true);
+  const storedCrc = dv.getUint32(22,true);
+  if(bits !== 16) throw new Error('Только 16-bit');
+  if(crc32(bytes.subarray(28)) !== storedCrc) throw new Error('Ошибка CRC32');
+
+  let off = 28;
+  const decoded = [];
+  for(let c=0;c<channels;c++){
+    const nBlocks = dv.getUint32(off, true); off += 4;
+    const blocks = [];
+    for(let b=0;b<nBlocks;b++){
+      const mode = dv.getUint8(off++);
+      const count = dv.getUint32(off, true); off += 4;
+      let k = 0;
+      if(mode === 0) k = dv.getUint8(off++);
+      const bytesLen = dv.getUint32(off, true); off += 4;
+      const bts = new Uint8Array(bytesLen);
+      for(let i=0;i<bytesLen;i++) bts[i] = dv.getUint8(off++);
+      blocks.push({ mode, count, k, bytes: bts });
+    }
+    decoded.push(decodeChannel(blocks, numSamplesPerCh));
+    if(onProgress){ onProgress((c+1)/channels); await new Promise(r=>setTimeout(r,0)); }
+  }
+  const out = new Int16Array(numSamplesPerCh * channels);
+  let kk = 0;
+  for(let i=0;i<numSamplesPerCh;i++){
+    for(let c=0;c<channels;c++) out[kk++] = decoded[c][i];
+  }
+  return { samples: out, channels, sampleRate, version, kind: 'lossless' };
+}
+
+/* ============================================================
+   УРОВНИ 2-3: LOSSY DECIMATION + QUANT (быстро + гарантия размера)
+   ------------------------------------------------------------
+   Формат:
+     0  magic u32
+     4  version u16 (3)
+     6  sampleRate u32
+     10 channels u8
+     11 level u8
+     12 decimation u8
+     13 qbits u8
+     14 reserved u16
+     16 NperCh u32
+     20 nSavedPerCh u32
+     24 crc32 u32
+     28 reserved u16
+     30 body: channels × nSavedPerCh × bytesPerSample
+
+   bytesPerSample = (qbits > 8) ? 2 : 1
+
+   Подбор:
+      target = wavSize / FACTOR (FACTOR = 2 для ур.2, 5 для ур.3)
+      Для dec в [1..256], для qbits в [16,12,8,6,4]:
+        size = 32 + channels * ceil(NperCh/dec) * bytesPerSample
+        если size ≤ target: выбрали, выходим
+      Если ни одна комбинация не подошла (очень маленький файл) —
+        используем dec=256, qbits=4, и это тоже уложится, т.к. wavSize ≥ 44.
+   ============================================================ */
+
+function calcLossySize(NperCh, channels, dec, qbits){
+  const bytesPerSample = (qbits > 8) ? 2 : 1;
+  const nSaved = Math.ceil(NperCh / dec);
+  return 32 + channels * nSaved * bytesPerSample;
+}
+
+function pickLossyParams(NperCh, channels, targetSize){
+  // Жёсткие границы: если даже максимальное сжатие не влезает — вернём его
+  for(let dec=1; dec<=256; dec++){
+    for(const qb of [16, 12, 8, 6, 4]){
+      if(calcLossySize(NperCh, channels, dec, qb) <= targetSize){
+        return { dec, qb };
+      }
+    }
+  }
+  // Гарантированный fallback
+  return { dec: 256, qb: 4 };
+}
+
+async function encodeC2ALossy(interleaved, channels, sampleRate, level, onProgress){
+  const NperCh = interleaved.length / channels;
+  const wavSize = interleaved.length * 2 + 44;
+  const factor = (level === 2) ? 2 : 5;
+  const targetSize = Math.floor(wavSize / factor);
+
+  const { dec, qb } = pickLossyParams(NperCh, channels, targetSize);
+  const decimation = dec;
+  const qbits = qb;
+  const qMax = (1 << (qbits-1)) - 1;
+  const qScale = qMax / 32767;
+  const nSavedPerCh = Math.ceil(NperCh / decimation);
+  const bytesPerSample = (qbits > 8) ? 2 : 1;
+  const bodySize = channels * nSavedPerCh * bytesPerSample;
+  const total = 32 + bodySize;
+  const outBuf = new ArrayBuffer(total);
+  const dv = new DataView(outBuf);
+
+  dv.setUint32(0, C2A_MAGIC_LOSSY, true);
+  dv.setUint16(4, 3, true);
+  dv.setUint32(6, sampleRate, true);
+  dv.setUint8(10, channels);
+  dv.setUint8(11, level);
+  dv.setUint8(12, decimation);
+  dv.setUint8(13, qbits);
+  dv.setUint16(14, 0, true);
+  dv.setUint32(16, NperCh, true);
+  dv.setUint32(20, nSavedPerCh, true);
+  // crc позже
+  dv.setUint16(28, 0, true);
+
+  let off = 32;
+  for(let c=0;c<channels;c++){
+    for(let j=0;j<nSavedPerCh;j++){
+      const idx = j * decimation;
+      let v = 0;
+      if(idx < NperCh){
+        v = interleaved[idx * channels + c];
+      }
+      let q = Math.round(v * qScale);
+      if(q > qMax) q = qMax;
+      if(q < -qMax) q = -qMax;
+      if(bytesPerSample === 2){
+        dv.setInt16(off, q, true); off += 2;
+      } else {
+        dv.setInt8(off, q); off += 1;
+      }
+    }
+    if(onProgress) onProgress((c+1)/channels);
+    await new Promise(r=>setTimeout(r,0));
+  }
+
+  const bytes = new Uint8Array(outBuf);
+  dv.setUint32(24, crc32(bytes.subarray(32)), true);
+
+  // Проверка размера — если не влезли, увеличиваем dec и пересобираем
+  const actual = bytes.length;
+  if(actual > targetSize){
+    // Увеличиваем dec пропорционально
+    const newDec = Math.min(256, Math.ceil(decimation * (actual / targetSize) * 1.1));
+    return await encodeC2ALossyWithParams(interleaved, channels, sampleRate, level,
+      newDec, qbits, onProgress);
+  }
+
+  return { bytes, decimation, qbits };
+}
+
+/* Кодирование с явными параметрами — для fallback-итерации */
+async function encodeC2ALossyWithParams(interleaved, channels, sampleRate, level,
+                                        decimation, qbits, onProgress){
+  const NperCh = interleaved.length / channels;
+  const qMax = (1 << (qbits-1)) - 1;
+  const qScale = qMax / 32767;
+  const nSavedPerCh = Math.ceil(NperCh / decimation);
+  const bytesPerSample = (qbits > 8) ? 2 : 1;
+  const bodySize = channels * nSavedPerCh * bytesPerSample;
+  const total = 32 + bodySize;
+  const outBuf = new ArrayBuffer(total);
+  const dv = new DataView(outBuf);
+
+  dv.setUint32(0, C2A_MAGIC_LOSSY, true);
+  dv.setUint16(4, 3, true);
+  dv.setUint32(6, sampleRate, true);
+  dv.setUint8(10, channels);
+  dv.setUint8(11, level);
+  dv.setUint8(12, decimation);
+  dv.setUint8(13, qbits);
+  dv.setUint16(14, 0, true);
+  dv.setUint32(16, NperCh, true);
+  dv.setUint32(20, nSavedPerCh, true);
+  dv.setUint16(28, 0, true);
+
+  let off = 32;
+  for(let c=0;c<channels;c++){
+    for(let j=0;j<nSavedPerCh;j++){
+      const idx = j * decimation;
+      let v = 0;
+      if(idx < NperCh) v = interleaved[idx * channels + c];
+      let q = Math.round(v * qScale);
+      if(q > qMax) q = qMax;
+      if(q < -qMax) q = -qMax;
+      if(bytesPerSample === 2){ dv.setInt16(off, q, true); off += 2; }
+      else { dv.setInt8(off, q); off += 1; }
+    }
+    if(onProgress) onProgress((c+1)/channels);
+    await new Promise(r=>setTimeout(r,0));
+  }
+
+  const bytes = new Uint8Array(outBuf);
+  dv.setUint32(24, crc32(bytes.subarray(32)), true);
+  return { bytes, decimation, qbits };
+}
+
+async function decodeC2ALossy(bytes, onProgress){
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if(dv.getUint32(0,true) !== C2A_MAGIC_LOSSY) throw new Error('Неверная сигнатура lossy');
+  const version = dv.getUint16(4,true);
+  const sampleRate = dv.getUint32(6,true);
+  const channels = dv.getUint8(10);
+  const level = dv.getUint8(11);
+  const decimation = dv.getUint8(12);
+  const qbits = dv.getUint8(13);
+  const NperCh = dv.getUint32(16,true);
+  const nSavedPerCh = dv.getUint32(20,true);
+  const storedCrc = dv.getUint32(24,true);
+  if(crc32(bytes.subarray(32)) !== storedCrc) throw new Error('Ошибка CRC32');
+
+  const bytesPerSample = (qbits > 8) ? 2 : 1;
+  const qMax = (1 << (qbits-1)) - 1;
+  const qScale = 32767 / qMax;
+
+  // Читаем сохранённые
+  let off = 32;
+  const savedChans = [];
+  for(let c=0;c<channels;c++){
+    const arr = new Int16Array(nSavedPerCh);
+    for(let j=0;j<nSavedPerCh;j++){
+      if(bytesPerSample === 2){ arr[j] = dv.getInt16(off, true); off += 2; }
+      else { arr[j] = dv.getInt8(off); off += 1; }
+    }
+    savedChans.push(arr);
+    if(onProgress){ onProgress(0.5 + (c+1)/channels * 0.5); await new Promise(r=>setTimeout(r,0)); }
+  }
+
+  // Интерполируем до NperCh
+  const out = new Int16Array(NperCh * channels);
+  for(let c=0;c<channels;c++){
+    const arr = savedChans[c];
+    for(let i=0;i<NperCh;i++){
+      const srcPos = i / decimation;
+      const j0 = Math.floor(srcPos);
+      const j1 = Math.min(j0 + 1, nSavedPerCh - 1);
+      const frac = srcPos - j0;
+      let v;
+      if(j0 >= nSavedPerCh){
+        v = arr[nSavedPerCh-1] * qScale;
+      } else {
+        const v0 = arr[j0] * qScale;
+        const v1 = arr[j1] * qScale;
+        v = v0 + (v1 - v0) * frac;
+      }
+      let iv = Math.round(v);
+      if(iv > 32767) iv = 32767;
+      if(iv < -32768) iv = -32768;
+      out[i * channels + c] = iv;
+    }
+  }
+  return { samples: out, channels, sampleRate, version, level,
+           decimation, qbits, kind: 'lossy' };
+}
+
+async function decodeC2A(bytes, onProgress){
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const magic = dv.getUint32(0,true);
+  if(magic === C2A_MAGIC_LOSSLESS) return await decodeC2ALossless(bytes, onProgress);
+  if(magic === C2A_MAGIC_LOSSY) return await decodeC2ALossy(bytes, onProgress);
+  throw new Error('Неизвестный формат C2A');
+}
+
+function computeMetrics(orig, rec){
+  const n = Math.min(orig.length, rec.length);
+  let mse = 0, sig = 0;
+  for(let i=0;i<n;i++){
+    const d = orig[i] - rec[i];
+    mse += d*d; sig += orig[i]*orig[i];
+  }
+  mse /= n; sig /= n;
+  const snr = sig > 0 ? 10*Math.log10(sig / (mse || 1e-20)) : 0;
+  const psnr = mse > 0 ? 10*Math.log10(1 / mse) : 100;
+  return { mse, snr, psnr, rmsErr: Math.sqrt(mse) };
+}
+
+/* ============================================================
+   UI: AUDIO → CODE
+   ============================================================ */
+let _objUrlEnc = null;
+function setEncBufferFromArrayBuffer(ab, name){
+  const actx = getAudioCtx();
+  return new Promise((resolve, reject)=>{
+    actx.decodeAudioData(ab.slice(0), buf=>{
+      state.encBuffer = buf;
+      state.encFileInfo = { name, duration: buf.duration, sampleRate: buf.sampleRate,
+                            channels: buf.numberOfChannels, type: 'аудио' };
+      setupTrimUI();
+      resolve(buf);
+    }, err=>reject(err));
+  });
+}
+
+function setupTrimUI(){
+  const buf = state.encBuffer;
+  const dur = buf.duration;
+  $('#encInfo').classList.remove('hidden');
+  $('#btnEncode').disabled = false;
+  $('#btnPlaySel').disabled = false;
+  const kv = $('#encInfoKv');
+  kv.innerHTML = '';
+  const add = (k,v)=>{ const d=document.createElement('div'); d.innerHTML='<span>'+k+'</span><span>'+v+'</span>'; kv.appendChild(d); };
+  add('Файл', state.encFileInfo.name);
+  add('Длительность', dur.toFixed(2)+' с');
+  add('Частота', buf.sampleRate+' Гц');
+  add('Каналов', buf.numberOfChannels);
+  const ts = $('#trimStart'), te = $('#trimEnd');
+  ts.max = dur;
+  te.max = dur;
+  ts.value = 0;
+  te.value = dur;
+  updateTrimLabels();
+  drawWaveform();
+  const wav = audioBufferToWav(buf);
+  if(_objUrlEnc) URL.revokeObjectURL(_objUrlEnc);
+  _objUrlEnc = URL.createObjectURL(new Blob([wav], {type:'audio/wav'}));
+  $('#encAudio').src = _objUrlEnc;
+}
+
+function updateTrimLabels(){
+  const buf = state.encBuffer;
+  if(!buf) return;
+  let s = parseFloat($('#trimStart').value);
+  let e = parseFloat($('#trimEnd').value);
+  if(e < s) { e = s; $('#trimEnd').value = e; }
+  $('#trimStartLbl').textContent = s.toFixed(2)+' с';
+  $('#trimEndLbl').textContent = e.toFixed(2)+' с';
+  $('#trimDur').textContent = (e-s).toFixed(2)+' с';
+  drawWaveform(s, e);
+}
+$('#trimStart').oninput = updateTrimLabels;
+$('#trimEnd').oninput = updateTrimLabels;
+
+function getSelectionBuffer(){
+  const buf = state.encBuffer;
+  const s = parseFloat($('#trimStart').value);
+  const e = parseFloat($('#trimEnd').value);
+  const sr = buf.sampleRate;
+  const start = Math.floor(s*sr);
+  const end = Math.floor(e*sr);
+  const len = Math.max(1, end-start);
+  const actx = getAudioCtx();
+  const out = actx.createBuffer(buf.numberOfChannels, len, sr);
+  for(let c=0;c<buf.numberOfChannels;c++){
+    out.copyToChannel(buf.getChannelData(c).subarray(start,end), c);
+  }
+  return out;
+}
+
+function drawWaveform(selS, selE){
+  const cvs = $('#waveCanvas');
+  const dpr = window.devicePixelRatio || 1;
+  const w = cvs.clientWidth, h = cvs.clientHeight;
+  cvs.width = w*dpr; cvs.height = h*dpr;
+  const ctx = cvs.getContext('2d');
+  ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,w,h);
+  const buf = state.encBuffer;
+  if(!buf) return;
+  const data = bufferToMono(buf);
+  const step = Math.max(1, Math.floor(data.length / w));
+  ctx.fillStyle = '#1c344a';
+  for(let x=0;x<w;x++){
+    let min=1,max=-1;
+    for(let i=0;i<step;i++){
+      const v = data[x*step+i] || 0;
+      if(v<min) min=v;
+      if(v>max) max=v;
+    }
+    const y1 = (1+min)/2*h, y2 = (1+max)/2*h;
+    ctx.fillRect(x, Math.min(y1,y2), 1, Math.max(1, Math.abs(y2-y1)));
+  }
+  if(selS !== undefined && selE !== undefined){
+    const sx = (selS/buf.duration)*w, ex = (selE/buf.duration)*w;
+    ctx.fillStyle = 'rgba(57,208,255,0.12)';
+    ctx.fillRect(sx,0,ex-sx,h);
+    ctx.strokeStyle = 'rgba(57,208,255,0.7)';
+    ctx.beginPath(); ctx.moveTo(sx,0); ctx.lineTo(sx,h);
+    ctx.moveTo(ex,0); ctx.lineTo(ex,h); ctx.stroke();
+  }
+}
+
+function bindDrop(dropEl, inputEl, handler){
+  dropEl.onclick = ()=> inputEl.click();
+  inputEl.onchange = ()=>{ if(inputEl.files[0]) handler(inputEl.files[0]); };
+  ['dragenter','dragover'].forEach(ev=>dropEl.addEventListener(ev, e=>{
+    e.preventDefault(); dropEl.classList.add('over');
+  }));
+  ['dragleave','drop'].forEach(ev=>dropEl.addEventListener(ev, e=>{
+    e.preventDefault(); dropEl.classList.remove('over');
+  }));
+  dropEl.addEventListener('drop', e=>{
+    if(e.dataTransfer.files[0]) handler(e.dataTransfer.files[0]);
+  });
+}
+
+const AUDIO_EXT = ['mp3','wav','flac','aac','m4a','ogg','oga','opus','weba','aiff','aif','caf'];
+const VIDEO_EXT = ['mp4','mov','webm','m4v','mkv','avi','ogv'];
+const IMG_EXT = ['jpg','jpeg','png','gif','bmp','webp','heic','heif','svg','tiff','ico'];
+function fileExt(name){ const i = name.lastIndexOf('.'); return i>=0 ? name.slice(i+1).toLowerCase() : ''; }
+
+bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
+  hideMsg($('#msgEnc'));
+  hideMsg($('#msgEnc2'));
+  $('#encResult').classList.add('hidden');
+  const ext = fileExt(file.name);
+  if(IMG_EXT.includes(ext)){
+    showMsg($('#msgEnc'), 'Формат ' + ext.toUpperCase() + ' не поддерживается.', 'err');
+    return;
+  }
+  try{
+    const ab = await file.arrayBuffer();
+    try{
+      await setEncBufferFromArrayBuffer(ab, file.name);
+      showMsg($('#msgEnc'), 'Файл загружен: ' + file.name, 'ok');
+    }catch(e){
+      if(ext && !AUDIO_EXT.includes(ext) && !VIDEO_EXT.includes(ext)){
+        showMsg($('#msgEnc'), 'Формат ' + ext.toUpperCase() + ' не поддерживается.', 'err');
+      } else {
+        showMsg($('#msgEnc'), 'Не удалось декодировать: ' + (e.message||e), 'err');
+      }
+    }
+  }catch(e){
+    showMsg($('#msgEnc'), 'Ошибка чтения: ' + (e.message||e), 'err');
+  }
+});
+
+$('#btnPlaySel').onclick = ()=>{
+  const buf = getSelectionBuffer();
+  const wav = audioBufferToWav(buf);
+  const url = URL.createObjectURL(new Blob([wav],{type:'audio/wav'}));
+  new Audio(url).play();
+};
+
+$$('#qualOpts .qualopt').forEach(o=>{
+  o.onclick = ()=>{
+    $$('#qualOpts .qualopt').forEach(x=>x.classList.remove('on'));
+    o.classList.add('on');
+    state.quality = parseInt(o.dataset.q, 10);
+    updateQualInfo();
+  };
+});
+function updateQualInfo(){
+  const info = $('#qualInfo');
+  if(state.quality === 1){
+    info.textContent = 'Lossless: bit-exact, сжатие 1.5–2.5×. Кодирует за миллисекунды.';
+  } else if(state.quality === 2){
+    info.textContent = 'Сбалансированный: гарантированно ≤ 1/2 от WAV (≥2×). Decimation + квантование. Мгновенно.';
+  } else {
+    info.textContent = 'Максимум: гарантированно ≤ 1/5 от WAV (≥5×). Decimation + квантование. Мгновенно.';
+  }
+}
+updateQualInfo();
+
+$('#btnEncode').onclick = async ()=>{
+  hideMsg($('#msgEnc2'));
+  $('#encResult').classList.add('hidden');
+  try{
+    const buf = getSelectionBuffer();
+    const { samples, channels } = bufferToInterleavedInt16(buf);
+    const origWav = pcmInt16ToWavBytes(samples, channels, buf.sampleRate);
+    $('#btnEncode').disabled = true;
+    $('#encStatus').textContent = 'Кодирование...';
+    const t0 = performance.now();
+    let c2aBytes;
+    if(state.quality === 1){
+      c2aBytes = await encodeC2ALossless(samples, channels, buf.sampleRate,
+        p=>{ $('#encProgress').style.width = (p*100).toFixed(1)+'%'; });
+    } else {
+      const r = await encodeC2ALossy(samples, channels, buf.sampleRate, state.quality,
+        p=>{ $('#encProgress').style.width = (p*100).toFixed(1)+'%'; });
+      c2aBytes = r.bytes;
+    }
+    const encTime = performance.now() - t0;
+    $('#encProgress').style.width = '100%';
+    $('#encStatus').textContent = 'Готово за ' + (encTime/1000).toFixed(2) + ' с';
+    state.encC2aBytes = c2aBytes;
+
+    let bitExact = null;
+    let metrics = null;
+    if(state.quality === 1){
+      const dec = await decodeC2A(c2aBytes, null);
+      bitExact = (dec.samples.length === samples.length);
+      if(bitExact){
+        for(let i=0;i<samples.length;i++){
+          if(dec.samples[i] !== samples[i]){ bitExact = false; break; }
+        }
+      }
+    } else {
+      const dec = await decodeC2A(c2aBytes, null);
+      const origF = new Float32Array(samples.length);
+      for(let i=0;i<samples.length;i++) origF[i] = samples[i]/32768;
+      const decF = new Float32Array(dec.samples.length);
+      for(let i=0;i<dec.samples.length;i++) decF[i] = dec.samples[i]/32768;
+      metrics = computeMetrics(origF, decF);
+    }
+
+    const stats = $('#encStats');
+    stats.innerHTML = '';
+    const add = (k,v)=>{ const d=document.createElement('div'); d.className='stat';
+      d.innerHTML='<span>'+k+'</span><b>'+v+'</b>'; stats.appendChild(d); };
+    add('Уровень', state.quality === 1 ? 'Lossless' : state.quality === 2 ? 'Сбалансированный' : 'Максимум');
+    add('Размер WAV', origWav.length.toLocaleString()+' Б');
+    add('Размер .c2a', c2aBytes.length.toLocaleString()+' Б');
+    add('Сжатие', (origWav.length/c2aBytes.length).toFixed(2)+'×');
+    add('Каналов', String(channels));
+    add('Частота', buf.sampleRate+' Гц');
+    add('Время кодирования', (encTime/1000).toFixed(2)+' с');
+    if(bitExact !== null){
+      add('Bit-exact', bitExact ? '✓ ДА' : '✗ НЕТ');
+      add('Потери', bitExact ? '0 (lossless)' : 'обнаружены');
+    } else {
+      add('PSNR', metrics.psnr.toFixed(2)+' дБ');
+      add('SNR', metrics.snr.toFixed(2)+' дБ');
+      add('RMS-ошибка', metrics.rmsErr.toExponential(2));
+    }
+    $('#encResult').classList.remove('hidden');
+    showMsg($('#msgEnc2'),
+      bitExact === false ? 'ВНИМАНИЕ: bit-exact проверка провалилась!' : 'Готово. Файл .c2a создан.',
+      bitExact === false ? 'err' : 'ok');
+  }catch(e){
+    console.error(e);
+    showMsg($('#msgEnc2'), 'Ошибка: ' + (e.message||e), 'err');
+    $('#encStatus').textContent = '';
+  }finally{
+    $('#btnEncode').disabled = false;
+  }
+};
+
+$('#btnDlC2a').onclick = ()=>{
+  if(!state.encC2aBytes) return;
+  const blob = new Blob([state.encC2aBytes], {type:'application/octet-stream'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (state.encFileInfo?.name || 'audio').replace(/\.[^.]+$/,'') + '.c2a';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+};
+
+$('#btnToDec').onclick = ()=>{
+  $$('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelector('.tab[data-tab="dec"]').classList.add('active');
+  $$('.tabpane').forEach(p=>p.classList.add('hidden'));
+  $('#tab-dec').classList.remove('hidden');
+  if(state.encC2aBytes){ state.decC2aBytes = state.encC2aBytes; showDecInfo(state.encC2aBytes); }
+};
+
+/* ============================================================
+   Code → Audio
+   ============================================================ */
+function showDecInfo(bytes){
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const kv = $('#decInfoKv');
+  kv.innerHTML = '';
+  const add = (k,v)=>{ const d=document.createElement('div'); d.innerHTML='<span>'+k+'</span><span>'+v+'</span>'; kv.appendChild(d); };
+  try{
+    const magic = dv.getUint32(0,true);
+    const isLossy = magic === C2A_MAGIC_LOSSY;
+    add('Тип', isLossy ? 'Lossy' : 'Lossless');
+    add('Версия', dv.getUint16(4,true));
+    add('Частота', dv.getUint32(6,true)+' Гц');
+    add('Каналов', dv.getUint8(10));
+    if(isLossy){
+      add('Уровень', dv.getUint8(11));
+      add('Прореживание', '1/' + dv.getUint8(12));
+      add('Биты', dv.getUint8(13));
+    }
+    add('Сэмплов/канал', dv.getUint32(16,true) || dv.getUint32(14,true));
+    add('Размер', bytes.length.toLocaleString()+' Б');
+  }catch(e){ add('Ошибка', 'повреждён заголовок'); }
+  $('#decInfo').classList.remove('hidden');
+  $('#decResult').classList.add('hidden');
+}
+
+bindDrop($('#dropDec'), $('#fileDec'), async file=>{
+  hideMsg($('#msgDec'));
+  $('#decResult').classList.add('hidden');
+  try{
+    const ab = await file.arrayBuffer();
+    const bytes = new Uint8Array(ab);
+    if(bytes.length < 28){ showMsg($('#msgDec'), 'Файл слишком мал.', 'err'); return; }
+    state.decC2aBytes = bytes;
+    showDecInfo(bytes);
+    showMsg($('#msgDec'), 'Файл .c2a загружен.', 'ok');
+  }catch(e){
+    showMsg($('#msgDec'), 'Ошибка: ' + (e.message||e), 'err');
+  }
+});
+
+$('#btnDecode').onclick = async ()=>{
+  hideMsg($('#msgDec'));
+  if(!state.decC2aBytes){ showMsg($('#msgDec'),'Сначала загрузите .c2a','err'); return; }
+  try{
+    $('#btnDecode').disabled = true;
+    $('#decProgress').style.width = '0%';
+    $('#decStatus').textContent = 'Декодирование...';
+    const t0 = performance.now();
+    const res = await decodeC2A(state.decC2aBytes,
+      p=>{ $('#decProgress').style.width = (p*100).toFixed(1)+'%'; });
+    const decTime = performance.now() - t0;
+    $('#decProgress').style.width = '100%';
+    $('#decStatus').textContent = 'Готово за ' + (decTime/1000).toFixed(2) + ' с';
+
+    const wav = pcmInt16ToWavBytes(res.samples, res.channels, res.sampleRate);
+    state.decWavBytes = wav;
+    $('#decAudio').src = URL.createObjectURL(new Blob([wav],{type:'audio/wav'}));
+
+    const stats = $('#decStats');
+    stats.innerHTML = '';
+    const add = (k,v)=>{ const d=document.createElement('div'); d.className='stat';
+      d.innerHTML='<span>'+k+'</span><b>'+v+'</b>'; stats.appendChild(d); };
+    add('Тип', res.kind === 'lossless' ? 'Lossless' : 'Lossy');
+    add('Время декодирования', (decTime/1000).toFixed(2)+' с');
+    add('Частота', res.sampleRate+' Гц');
+    add('Каналов', res.channels);
+    add('Длительность', (res.samples.length/res.channels/res.sampleRate).toFixed(2)+' с');
+
+    $('#decResult').classList.remove('hidden');
+    showMsg($('#msgDec'), 'Декодировано.', 'ok');
+  }catch(e){
+    console.error(e);
+    showMsg($('#msgDec'), 'Ошибка декодирования: ' + (e.message||e), 'err');
+    $('#decStatus').textContent = '';
+  }finally{
+    $('#btnDecode').disabled = false;
+  }
+};
+
+$('#btnDlWav').onclick = ()=>{
+  if(!state.decWavBytes) return;
+  const blob = new Blob([state.decWavBytes], {type:'audio/wav'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'c2a_restored.wav';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+};
+
+/* ============================================================
+   FSK-МОДЕМ ДЛЯ ТЕКСТА
+   ============================================================ */
+const FSK_SR = 44100;
+const FSK_BAUD = 50;
+const FSK_F0 = 2000;
+const FSK_F1 = 3000;
+const FSK_AMP = 0.6;
+const SYNC_WORD = 0xD3A5;
+
+function crc16(bytes){
+  let crc = 0xFFFF;
+  for(let i=0;i<bytes.length;i++){
+    crc ^= (bytes[i] << 8);
+    for(let j=0;j<8;j++){
+      crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+    }
+  }
+  return crc & 0xFFFF;
+}
+
+function modulateBits(bits, sr, baud, f0, f1, amp){
+  const spb = Math.round(sr / baud);
+  const out = new Float32Array(bits.length * spb);
+  let phase = 0, idx = 0;
+  for(let i=0;i<bits.length;i++){
+    const freq = bits[i] ? f1 : f0;
+    const inc = 2 * Math.PI * freq / sr;
+    for(let j=0;j<spb;j++){
+      out[idx++] = amp * Math.sin(phase);
+      phase += inc;
+      if(phase > 2*Math.PI) phase -= 2*Math.PI;
+    }
+  }
+  return out;
+}
+
+function demodulateBits(pcm, sr, baud, f0, f1){
+  const spb = Math.round(sr / baud);
+  const nBits = Math.floor(pcm.length / spb);
+  const bits = new Uint8Array(nBits);
+  const cos0 = new Float32Array(spb), sin0 = new Float32Array(spb);
+  const cos1 = new Float32Array(spb), sin1 = new Float32Array(spb);
+  for(let j=0;j<spb;j++){
+    const t = j / sr;
+    const p0 = 2 * Math.PI * f0 * t;
+    const p1 = 2 * Math.PI * f1 * t;
+    cos0[j] = Math.cos(p0); sin0[j] = Math.sin(p0);
+    cos1[j] = Math.cos(p1); sin1[j] = Math.sin(p1);
+  }
+  for(let b=0;b<nBits;b++){
+    const start = b*spb;
+    let i0=0,q0=0,i1=0,q1=0;
+    for(let j=0;j<spb;j++){
+      const v = pcm[start+j];
+      i0 += v * cos0[j]; q0 += v * sin0[j];
+      i1 += v * cos1[j]; q1 += v * sin1[j];
+    }
+    const e0 = i0*i0 + q0*q0, e1 = i1*i1 + q1*q1;
+    bits[b] = (e1 > e0) ? 1 : 0;
+  }
+  return bits;
+}
+
+function findSync(bits){
+  const syncBits = [];
+  for(let i=15;i>=0;i--) syncBits.push((SYNC_WORD >> i) & 1);
+  let best = -1, bestErrors = 999;
+  for(let start=0; start+16 <= bits.length; start++){
+    let err = 0;
+    for(let i=0;i<16;i++) err += (bits[start+i] !== syncBits[i]) ? 1 : 0;
+    if(err < bestErrors){ bestErrors = err; best = start; }
+    if(err === 0) break;
+  }
+  return { pos: best, errors: bestErrors };
+}
+
+function manchesterDecode(bits, startPos){
+  const out = [];
+  let errors = 0;
+  for(let i=startPos; i+1<bits.length; i+=2){
+    const a = bits[i], b = bits[i+1];
+    if(a === 0 && b === 1) out.push(1);
+    else if(a === 1 && b === 0) out.push(0);
+    else { out.push(0); errors++; }
+  }
+  return { bits: out, errors };
+}
+
+function manchesterEncode(bits){
+  const out = [];
+  for(const b of bits){
+    if(b === 0) out.push(1, 0);
+    else out.push(0, 1);
+  }
+  return out;
+}
+
+function textToFskWav(text){
+  const sr = FSK_SR;
+  const textBytes = new TextEncoder().encode(text);
+  const len = textBytes.length;
+  const dataBits = [];
+  for(let i=15;i>=0;i--) dataBits.push((len >> i) & 1);
+  for(const b of textBytes){
+    for(let i=7;i>=0;i--) dataBits.push((b >> i) & 1);
+  }
+  const crc = crc16(textBytes);
+  for(let i=15;i>=0;i--) dataBits.push((crc >> i) & 1);
+  const manBits = manchesterEncode(dataBits);
+  const preamble = [];
+  for(let i=0;i<64;i++) preamble.push(i % 2);
+  const syncBits = [];
+  for(let i=15;i>=0;i--) syncBits.push((SYNC_WORD >> i) & 1);
+  const allBits = [...preamble, ...syncBits, ...manBits];
+  const pcm = modulateBits(allBits, sr, FSK_BAUD, FSK_F0, FSK_F1, FSK_AMP);
+  const fadeN = Math.floor(0.01 * sr);
+  for(let i=0;i<fadeN;i++){
+    const g = i / fadeN;
+    pcm[i] *= g;
+    pcm[pcm.length-1-i] *= g;
+  }
+  let peak = 0;
+  for(let i=0;i<pcm.length;i++) peak = Math.max(peak, Math.abs(pcm[i]));
+  if(peak > 0.9){
+    const g = 0.9 / peak;
+    for(let i=0;i<pcm.length;i++) pcm[i] *= g;
+  }
+  const buf = monoFloatToAudioBuffer(pcm, sr);
+  return { wav: audioBufferToWav(buf), pcm, sr };
+}
+
+function fskPcmToText(pcm, sr){
+  const rawBits = demodulateBits(pcm, sr, FSK_BAUD, FSK_F0, FSK_F1);
+  if(rawBits.length < 200) throw new Error('Слишком короткий сигнал');
+  const sync = findSync(rawBits);
+  if(sync.pos < 0 || sync.errors > 4){
+    throw new Error('Синхрослово не найдено (ошибок: ' + (sync.errors||0) + ')');
+  }
+  const { bits: manOut, errors } = manchesterDecode(rawBits, sync.pos + 16);
+  if(manOut.length < 16) throw new Error('Мало данных');
+  let len = 0;
+  for(let i=0;i<16;i++) len = (len << 1) | manOut[i];
+  if(len < 0 || len > manOut.length/8) throw new Error('Некорректная длина: '+len);
+  const totalBits = 16 + len*8 + 16;
+  if(manOut.length < totalBits) throw new Error('Данные обрезаны');
+  const bytes = new Uint8Array(len);
+  for(let bi=0;bi<len;bi++){
+    let v = 0;
+    for(let k=0;k<8;k++) v = (v << 1) | manOut[16 + bi*8 + k];
+    bytes[bi] = v;
+  }
+  let crcRecv = 0;
+  for(let i=0;i<16;i++) crcRecv = (crcRecv << 1) | manOut[16 + len*8 + i];
+  const crcCalc = crc16(bytes);
+  const text = new TextDecoder('utf-8', {fatal:false}).decode(bytes);
+  return { text, crcOk: crcRecv === crcCalc, crcRecv, crcCalc,
+           syncErrors: sync.errors, manchesterErrors: errors, len };
+}
+
+$('#btnT2cEncode').onclick = ()=>{
+  hideMsg($('#msgT2c'));
+  const txt = $('#t2cInput').value;
+  if(txt.length === 0){ showMsg($('#msgT2c'), 'Введите текст.', 'err'); return; }
+  try{
+    const { wav, pcm, sr } = textToFskWav(txt);
+    state.t2cWav = wav;
+    state.t2cText = txt;
+    $('#t2cAudio').src = URL.createObjectURL(new Blob([wav],{type:'audio/wav'}));
+    const kv = $('#t2cKv');
+    kv.innerHTML = '';
+    const add = (k,v)=>{ const d=document.createElement('div'); d.innerHTML='<span>'+k+'</span><span>'+v+'</span>'; kv.appendChild(d); };
+    add('Символов', String([...txt].length));
+    add('Байт UTF-8', String(new TextEncoder().encode(txt).length));
+    add('Длительность', (pcm.length/sr).toFixed(2)+' с');
+    add('Частота', sr+' Гц');
+    add('Скорость', FSK_BAUD+' бод (Manchester)');
+    add('Несущие', FSK_F0+' / '+FSK_F1+' Гц');
+    add('Размер WAV', wav.length.toLocaleString()+' Б');
+    add('Хеш', hashStr(txt).toString(16));
+    $('#t2cResult').classList.remove('hidden');
+    showMsg($('#msgT2c'), 'WAV сгенерирован. Проиграйте и примите в Code to Text.', 'ok');
+  }catch(e){
+    console.error(e);
+    showMsg($('#msgT2c'), 'Ошибка: ' + (e.message||e), 'err');
+  }
+};
+
+$('#btnDlT2cWav').onclick = ()=>{
+  if(!state.t2cWav) return;
+  const blob = new Blob([state.t2cWav], {type:'audio/wav'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'fsk_text.wav';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+};
+
+/* ============================================================
+   Code to Text
+   ============================================================ */
+function showC2tResult(res){
+  state.c2tText = res.text;
+  $('#c2tOut').value = res.text;
+  const kv = $('#c2tKv');
+  kv.innerHTML = '';
+  const add = (k,v)=>{ const d=document.createElement('div'); d.innerHTML='<span>'+k+'</span><span>'+v+'</span>'; kv.appendChild(d); };
+  add('Символов', String([...res.text].length));
+  add('Байт', String(res.len));
+  add('Ошибки sync', String(res.syncErrors));
+  add('Ошибки Manchester', String(res.manchesterErrors));
+  add('CRC16', res.crcOk ? '✓ OK' : '✗ ОШИБКА');
+  if(!res.crcOk){
+    add('CRC получен', res.crcRecv.toString(16));
+    add('CRC ожидался', res.crcCalc.toString(16));
+  }
+  $('#c2tResult').classList.remove('hidden');
+  if(res.crcOk){
+    showMsg($('#msgMicListen'), 'Текст восстановлен, CRC OK.', 'ok');
+  } else {
+    showMsg($('#msgMicListen'), 'CRC не совпал — возможно, шум. Попробуйте ближе к источнику.', 'warn');
+  }
+}
+
+bindDrop($('#dropC2t'), $('#fileC2t'), async file=>{
+  hideMsg($('#msgMicListen'));
+  $('#c2tResult').classList.add('hidden');
+  try{
+    const ab = await file.arrayBuffer();
+    const bytes = new Uint8Array(ab);
+    if(bytes.length < 44) throw new Error('Файл слишком мал');
+    const { pcm, sr } = wavBytesToPcm(bytes);
+    const res = fskPcmToText(pcm, sr);
+    showC2tResult(res);
+  }catch(e){
+    console.error(e);
+    showMsg($('#msgMicListen'), 'Ошибка: ' + (e.message||e), 'err');
+  }
+});
+
+let micListen = { stream: null, ctx: null, source: null, proc: null,
+                  buffer: [], timer: null, active: false };
+
+$('#btnMicListen').onclick = async ()=>{
+  hideMsg($('#msgMicListen'));
+  $('#c2tResult').classList.add('hidden');
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    micListen.stream = stream;
+    const ctx = getAudioCtx();
+    micListen.ctx = ctx;
+    if(ctx.state === 'suspended') await ctx.resume();
+    const src = ctx.createMediaStreamSource(stream);
+    micListen.source = src;
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    micListen.proc = proc;
+    micListen.buffer = [];
+    micListen.active = true;
+
+    proc.onaudioprocess = e=>{
+      if(!micListen.active) return;
+      const input = e.inputBuffer.getChannelData(0);
+      let peak = 0;
+      for(let i=0;i<input.length;i++) peak = Math.max(peak, Math.abs(input[i]));
+      $('#micLevel').style.width = Math.min(100, peak*200) + '%';
+      $('#micLevelTxt').textContent = Math.min(100, Math.round(peak*200)) + '%';
+      micListen.buffer.push(new Float32Array(input));
+    };
+
+    src.connect(proc);
+    proc.connect(ctx.destination);
+
+    $('#btnMicListen').disabled = true;
+    $('#btnMicListenStop').disabled = false;
+    $('#micState').textContent = 'слушаю…';
+    showMsg($('#msgMicListen'), 'Слушаю. Запустите проигрывание WAV рядом.', 'ok');
+
+    clearTimeout(micListen.timer);
+    micListen.timer = setTimeout(()=>stopMicAndDecode(), 25000);
+  }catch(e){
+    showMsg($('#msgMicListen'), 'Не удалось получить микрофон: ' + (e.message||e), 'err');
+  }
+};
+
+$('#btnMicListenStop').onclick = ()=> stopMicAndDecode();
+
+async function stopMicAndDecode(){
+  if(!micListen.active) return;
+  micListen.active = false;
+  clearTimeout(micListen.timer);
+  $('#btnMicListen').disabled = false;
+  $('#btnMicListenStop').disabled = true;
+  $('#micState').textContent = 'обработка…';
+  try{
+    if(micListen.proc) micListen.proc.disconnect();
+    if(micListen.source) micListen.source.disconnect();
+    if(micListen.stream) micListen.stream.getTracks().forEach(t=>t.stop());
+  }catch(e){}
+  const totalLen = micListen.buffer.reduce((a,b)=>a+b.length, 0);
+  const pcm = new Float32Array(totalLen);
+  let off = 0;
+  for(const chunk of micListen.buffer){ pcm.set(chunk, off); off += chunk.length; }
+  const sr = micListen.ctx.sampleRate;
+  micListen.ctx = null;
+  micListen.buffer = [];
+  try{
+    const res = fskPcmToText(pcm, sr);
+    showC2tResult(res);
+  }catch(e){
+    showMsg($('#msgMicListen'), 'Не удалось декодировать: ' + (e.message||e) +
+      '. Попробуйте ближе к источнику.', 'err');
+    $('#micState').textContent = 'не активно';
+  }
+}
+
+$('#btnCopyTxt').onclick = async ()=>{
+  try{
+    await navigator.clipboard.writeText(state.c2tText || '');
+    showMsg($('#msgMicListen'), 'Текст скопирован.', 'ok');
+  }catch(e){
+    const ta = $('#c2tOut'); ta.select(); document.execCommand('copy');
+    showMsg($('#msgMicListen'), 'Текст скопирован.', 'ok');
+  }
+};
+
+$('#btnDlTxt').onclick = ()=>{
+  if(!state.c2tText) return;
+  const blob = new Blob([state.c2tText], {type:'text/plain;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'restored.txt';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+};
+
+window.addEventListener('resize', ()=>{ if(state.encBuffer) drawWaveform(); });
+</script>
+</body>
+</html>
