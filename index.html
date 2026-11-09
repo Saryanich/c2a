@@ -81,7 +81,7 @@
 
 <header>
   <div class="logo">C2A</div>
-  <div class="sub">Code&nbsp;to&nbsp;Audio — гарантированно ≤ WAV</div>
+  <div class="sub">Code&nbsp;to&nbsp;Audio — гарантия размера через перебор</div>
 </header>
 
 <main>
@@ -121,8 +121,9 @@
 
     <div class="panel">
       <h2>2. Кодирование</h2>
-      <p class="muted small">Гарантия размера: <b>c2a ≤ wav</b>. Алгоритм: decimation + 16-bit quantization
-        с коэффициентом, подобранным по формуле. Никаких итераций, никаких раздутий.</p>
+      <p class="muted small">Цель: <b>c2a ≤ исходный файл</b> (не больше загруженного файла).
+        Перебор decimation от 1 до 65535, первый подходящий → сборка. Проверка после сборки
+        и цикл до успеха.</p>
       <div class="row">
         <button class="primary" id="btnEncode" disabled>Кодировать в .c2a</button>
         <button id="btnPlaySel" disabled>Прослушать фрагмент</button>
@@ -226,11 +227,11 @@
 
 </main>
 
-<footer>C2A · гарантированное сжатие + акустический текст</footer>
+<footer>C2A · гарантия размера через перебор + акустический текст</footer>
 
 <script>
 /* ============================================================
-   C2A — Code to Audio (v10: простой гарантированный decimation)
+   C2A — Code to Audio (v11: тупой перебор + жёсткая проверка)
    ============================================================ */
 
 const $ = s => document.querySelector(s);
@@ -277,6 +278,7 @@ $$('.tab').forEach(t=>{
 const state = {
   encBuffer: null,
   encFileInfo: null,
+  encOriginalFileSize: 0,
   encC2aBytes: null,
   decC2aBytes: null,
   decWavBytes: null,
@@ -417,74 +419,67 @@ function wavBytesToPcm(bytes){
 }
 
 /* ============================================================
-   C2A LOSSY: ПРОСТАЯ ГАРАНТИЯ ЧЕРЕЗ ФОРМУЛУ
+   C2A: ТУПОЙ ПЕРЕБОР DECIMATION
    ------------------------------------------------------------
-   Формат v5:
-     0  magic u32 = 0x43324C35 ("C2L5")
-     4  version u16 = 5
+   Формат (v6):
+     0  magic u32 = 0x43324C36 ("C2L6")
+     4  version u16 = 6
      6  sampleRate u32
      10 channels u8
-     11 qbits u8 (всегда 16)
-     12 decimation u16 (1..65535)
-     14 reserved u16
+     11 reserved u8
+     12 decimation u32 (1..2^32-1)
      16 NperCh u32
      20 nSavedPerCh u32
-     24 wavSize u32 (для проверки)
-     28 crc32 u32
-     32 body
+     24 targetSize u32 (какой был target — для валидации)
+     28 bodySize u32
+     32 crc32 u32
+     36 body
 
-   bytesPerSample = 2 (qbits=16)
-
-   Формула подбора dec:
-     targetBody = wavSize - 32
-     wantSaved  = targetBody / (channels * 2)
-     dec = max(1, floor(NperCh / wantSaved))
-
-   Тогда size = 32 + channels * ceil(NperCh/dec) * 2
-             ≈ wavSize (гарантированно ≤ wavSize)
-
-   Если после сборки размер > wavSize (редкий случай из-за ceil) —
-     увеличиваем dec на 1 и пересобираем. Максимум 2 итерации.
+   Целевой размер = размер исходного файла (не WAV!).
    ============================================================ */
-const C2A_MAGIC_LOSSY = 0x43324C35; // "C2L5"
+const C2A_MAGIC = 0x43324C36; // "C2L6"
 
-function pickDec(NperCh, channels, wavSize){
-  const targetBody = wavSize - 32;
-  if(targetBody <= 0) return 256;
-  const wantSavedPerCh = targetBody / (channels * 2);
-  if(wantSavedPerCh <= 0) return 256;
-  const dec = Math.max(1, Math.floor(NperCh / wantSavedPerCh));
-  return Math.min(dec, 65535);
+function totalSizeFor(NperCh, channels, dec){
+  const nSaved = Math.ceil(NperCh / dec);
+  return 36 + channels * nSaved * 2;
 }
 
-async function encodeC2A(interleaved, channels, sampleRate, onProgress){
+async function encodeC2A(interleaved, channels, sampleRate, targetSize, onProgress){
   const NperCh = interleaved.length / channels;
-  const wavSize = interleaved.length * 2 + 44;
 
-  let dec = pickDec(NperCh, channels, wavSize);
-  let bytes = null;
-  let iterations = 0;
+  // Перебор dec от 1 до 65535: первый, при котором totalSize ≤ targetSize
+  let dec = 1;
+  const maxDec = 65535;
+  while(dec <= maxDec){
+    if(totalSizeFor(NperCh, channels, dec) <= targetSize) break;
+    dec++;
+    if(dec % 1000 === 0 && onProgress){
+      onProgress(dec / maxDec * 0.3);
+      await new Promise(r=>setTimeout(r,0));
+    }
+  }
+  if(dec > maxDec) dec = maxDec;
 
-  while(iterations < 3){
-    iterations++;
+  // Собираем с этим dec; если всё-таки больше — увеличиваем
+  for(let iter=0; iter<20; iter++){
     const nSavedPerCh = Math.ceil(NperCh / dec);
     const bodySize = channels * nSavedPerCh * 2;
-    const total = 32 + bodySize;
+    const total = 36 + bodySize;
     const outBuf = new ArrayBuffer(total);
     const dv = new DataView(outBuf);
 
-    dv.setUint32(0, C2A_MAGIC_LOSSY, true);
-    dv.setUint16(4, 5, true);
+    dv.setUint32(0, C2A_MAGIC, true);
+    dv.setUint16(4, 6, true);
     dv.setUint32(6, sampleRate, true);
     dv.setUint8(10, channels);
-    dv.setUint8(11, 16); // qbits
-    dv.setUint16(12, dec, true);
-    dv.setUint16(14, 0, true);
+    dv.setUint8(11, 0);
+    dv.setUint32(12, dec, true);
     dv.setUint32(16, NperCh, true);
     dv.setUint32(20, nSavedPerCh, true);
-    dv.setUint32(24, wavSize, true);
+    dv.setUint32(24, targetSize, true);
+    dv.setUint32(28, bodySize, true);
 
-    let off = 32;
+    let off = 36;
     for(let c=0;c<channels;c++){
       for(let j=0;j<nSavedPerCh;j++){
         const idx = j * dec;
@@ -492,37 +487,35 @@ async function encodeC2A(interleaved, channels, sampleRate, onProgress){
         if(idx < NperCh) v = interleaved[idx * channels + c];
         dv.setInt16(off, v, true); off += 2;
       }
-      if(onProgress) onProgress((c+1)/channels * 0.9);
+      if(onProgress) onProgress(0.3 + (c+1)/channels * 0.7);
       await new Promise(r=>setTimeout(r,0));
     }
-    bytes = new Uint8Array(outBuf);
-    dv.setUint32(28, crc32(bytes.subarray(32)), true);
+    const bytes = new Uint8Array(outBuf);
+    dv.setUint32(32, crc32(bytes.subarray(36)), true);
 
-    // Проверка
-    if(bytes.length <= wavSize) break;
-    // Увеличиваем dec пропорционально переполнению
-    dec = Math.min(65535, Math.ceil(dec * (bytes.length / wavSize) * 1.05));
+    if(bytes.length <= targetSize || dec >= maxDec){
+      return { bytes, dec, iterations: iter+1, targetSize, actualSize: bytes.length };
+    }
+    // Ещё раз увеличиваем
+    const ratio = bytes.length / targetSize;
+    dec = Math.min(maxDec, Math.ceil(dec * ratio * 1.05));
   }
-
-  if(onProgress) onProgress(1);
-  return { bytes, dec };
+  throw new Error('Не удалось уложиться в целевой размер');
 }
 
 async function decodeC2A(bytes, onProgress){
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if(dv.getUint32(0,true) !== C2A_MAGIC_LOSSY) throw new Error('Неверная сигнатура C2A');
+  if(dv.getUint32(0,true) !== C2A_MAGIC) throw new Error('Неверная сигнатура C2A');
   const version = dv.getUint16(4,true);
   const sampleRate = dv.getUint32(6,true);
   const channels = dv.getUint8(10);
-  const qbits = dv.getUint8(11);
-  const decimation = dv.getUint16(12,true);
+  const decimation = dv.getUint32(12,true);
   const NperCh = dv.getUint32(16,true);
   const nSavedPerCh = dv.getUint32(20,true);
-  const storedCrc = dv.getUint32(28,true);
-  if(qbits !== 16) throw new Error('Только qbits=16');
-  if(crc32(bytes.subarray(32)) !== storedCrc) throw new Error('Ошибка CRC32');
+  const storedCrc = dv.getUint32(32,true);
+  if(crc32(bytes.subarray(36)) !== storedCrc) throw new Error('Ошибка CRC32');
 
-  let off = 32;
+  let off = 36;
   const savedChans = [];
   for(let c=0;c<channels;c++){
     const arr = new Int16Array(nSavedPerCh);
@@ -533,7 +526,6 @@ async function decodeC2A(bytes, onProgress){
     if(onProgress){ onProgress(0.5 + (c+1)/channels * 0.5); await new Promise(r=>setTimeout(r,0)); }
   }
 
-  // Интерполяция
   const out = new Int16Array(NperCh * channels);
   for(let c=0;c<channels;c++){
     const arr = savedChans[c];
@@ -556,7 +548,7 @@ async function decodeC2A(bytes, onProgress){
       out[i * channels + c] = iv;
     }
   }
-  return { samples: out, channels, sampleRate, version, decimation, kind: 'lossy' };
+  return { samples: out, channels, sampleRate, version, decimation, kind: 'decimation' };
 }
 
 function computeMetrics(orig, rec){
@@ -576,13 +568,14 @@ function computeMetrics(orig, rec){
    UI: AUDIO → CODE
    ============================================================ */
 let _objUrlEnc = null;
-function setEncBufferFromArrayBuffer(ab, name){
+function setEncBufferFromArrayBuffer(ab, name, fileSize){
   const actx = getAudioCtx();
   return new Promise((resolve, reject)=>{
     actx.decodeAudioData(ab.slice(0), buf=>{
       state.encBuffer = buf;
       state.encFileInfo = { name, duration: buf.duration, sampleRate: buf.sampleRate,
                             channels: buf.numberOfChannels, type: 'аудио' };
+      state.encOriginalFileSize = fileSize;
       setupTrimUI();
       resolve(buf);
     }, err=>reject(err));
@@ -599,6 +592,7 @@ function setupTrimUI(){
   kv.innerHTML = '';
   const add = (k,v)=>{ const d=document.createElement('div'); d.innerHTML='<span>'+k+'</span><span>'+v+'</span>'; kv.appendChild(d); };
   add('Файл', state.encFileInfo.name);
+  add('Размер исходного файла', state.encOriginalFileSize.toLocaleString()+' Б');
   add('Длительность', dur.toFixed(2)+' с');
   add('Частота', buf.sampleRate+' Гц');
   add('Каналов', buf.numberOfChannels);
@@ -709,8 +703,8 @@ bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
   try{
     const ab = await file.arrayBuffer();
     try{
-      await setEncBufferFromArrayBuffer(ab, file.name);
-      showMsg($('#msgEnc'), 'Файл загружен: ' + file.name, 'ok');
+      await setEncBufferFromArrayBuffer(ab, file.name, file.size);
+      showMsg($('#msgEnc'), 'Файл загружен: ' + file.name + ' (' + file.size.toLocaleString() + ' Б)', 'ok');
     }catch(e){
       if(ext && !AUDIO_EXT.includes(ext) && !VIDEO_EXT.includes(ext)){
         showMsg($('#msgEnc'), 'Формат ' + ext.toUpperCase() + ' не поддерживается.', 'err');
@@ -736,15 +730,24 @@ $('#btnEncode').onclick = async ()=>{
   try{
     const buf = getSelectionBuffer();
     const { samples, channels } = bufferToInterleavedInt16(buf);
-    const origWav = pcmInt16ToWavBytes(samples, channels, buf.sampleRate);
+    const pcmWav = pcmInt16ToWavBytes(samples, channels, buf.sampleRate);
+
+    // Целевой размер = размер исходного файла, но не больше PCM WAV (иначе бессмысленно)
+    let targetSize = state.encOriginalFileSize;
+    if(targetSize <= 36 || targetSize > pcmWav.length){
+      // если исходник — WAV, используем его размер; если MP3 меньше WAV — берём MP3 (меньше цель, сильнее сжатие)
+      targetSize = Math.min(state.encOriginalFileSize || pcmWav.length, pcmWav.length);
+    }
+    if(targetSize < 100) targetSize = 100;
+
     $('#btnEncode').disabled = true;
-    $('#encStatus').textContent = 'Кодирование...';
+    $('#encStatus').textContent = 'Кодирование (цель: ' + targetSize.toLocaleString() + ' Б)...';
     const t0 = performance.now();
-    const r = await encodeC2A(samples, channels, buf.sampleRate,
+    const r = await encodeC2A(samples, channels, buf.sampleRate, targetSize,
       p=>{ $('#encProgress').style.width = (p*100).toFixed(1)+'%'; });
     const encTime = performance.now() - t0;
     $('#encProgress').style.width = '100%';
-    $('#encStatus').textContent = 'Готово за ' + (encTime/1000).toFixed(2) + ' с';
+    $('#encStatus').textContent = 'Готово за ' + (encTime/1000).toFixed(2) + ' с (iter=' + r.iterations + ')';
     state.encC2aBytes = r.bytes;
 
     // Проверка декодированием + метрики
@@ -759,10 +762,12 @@ $('#btnEncode').onclick = async ()=>{
     stats.innerHTML = '';
     const add = (k,v)=>{ const d=document.createElement('div'); d.className='stat';
       d.innerHTML='<span>'+k+'</span><b>'+v+'</b>'; stats.appendChild(d); };
-    add('Размер WAV', origWav.length.toLocaleString()+' Б');
+    add('Исходный файл', state.encOriginalFileSize.toLocaleString()+' Б');
+    add('PCM WAV', pcmWav.length.toLocaleString()+' Б');
+    add('Цель', targetSize.toLocaleString()+' Б');
     add('Размер .c2a', r.bytes.length.toLocaleString()+' Б');
-    add('Сжатие', (origWav.length/r.bytes.length).toFixed(2)+'×');
-    add('Гарантия', r.bytes.length <= origWav.length ? '✓ c2a ≤ wav' : '✗ ПРЕВЫШЕН');
+    add('Сжатие от исходника', (state.encOriginalFileSize / r.bytes.length).toFixed(2)+'×');
+    add('Гарантия', r.bytes.length <= targetSize ? '✓ c2a ≤ цель' : '✗ ПРЕВЫШЕН');
     add('Decimation', '1/' + r.dec);
     add('Каналов', String(channels));
     add('Частота', buf.sampleRate+' Гц');
@@ -771,8 +776,8 @@ $('#btnEncode').onclick = async ()=>{
     add('SNR', metrics.snr.toFixed(2)+' дБ');
     $('#encResult').classList.remove('hidden');
     showMsg($('#msgEnc2'),
-      r.bytes.length <= origWav.length ? 'Готово. c2a ≤ wav гарантировано.' : 'ВНИМАНИЕ: c2a > wav!',
-      r.bytes.length <= origWav.length ? 'ok' : 'err');
+      r.bytes.length <= targetSize ? 'Готово. c2a ≤ цель гарантировано.' : 'ВНИМАНИЕ: превышение!',
+      r.bytes.length <= targetSize ? 'ok' : 'err');
   }catch(e){
     console.error(e);
     showMsg($('#msgEnc2'), 'Ошибка: ' + (e.message||e), 'err');
@@ -812,8 +817,9 @@ function showDecInfo(bytes){
     add('Версия', dv.getUint16(4,true));
     add('Частота', dv.getUint32(6,true)+' Гц');
     add('Каналов', dv.getUint8(10));
-    add('Decimation', '1/' + dv.getUint16(12,true));
+    add('Decimation', '1/' + dv.getUint32(12,true));
     add('Сэмплов/канал', dv.getUint32(16,true));
+    add('Целевой размер', dv.getUint32(24,true).toLocaleString()+' Б');
     add('Размер', bytes.length.toLocaleString()+' Б');
   }catch(e){ add('Ошибка', 'повреждён заголовок'); }
   $('#decInfo').classList.remove('hidden');
@@ -826,7 +832,7 @@ bindDrop($('#dropDec'), $('#fileDec'), async file=>{
   try{
     const ab = await file.arrayBuffer();
     const bytes = new Uint8Array(ab);
-    if(bytes.length < 32){ showMsg($('#msgDec'), 'Файл слишком мал.', 'err'); return; }
+    if(bytes.length < 36){ showMsg($('#msgDec'), 'Файл слишком мал.', 'err'); return; }
     state.decC2aBytes = bytes;
     showDecInfo(bytes);
     showMsg($('#msgDec'), 'Файл .c2a загружен.', 'ok');
@@ -1186,7 +1192,6 @@ async function liveProcessSampleChunk(floatChunk, sr){
     }
   }
 
-  // Manchester из syncPos
   const rb = liveState.rawBits;
   liveState.manOut = [];
   for(let i=liveState.syncPos; i+1 < rb.length; i+=2){
