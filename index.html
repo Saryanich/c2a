@@ -899,6 +899,12 @@ const FSK_F1 = 3000;
 const FSK_AMP = 0.6;
 const SYNC_WORD = 0xD3A5;
 
+/* ---- Новые параметры устойчивости ---- */
+const LIVE_TARGET_RMS = 0.08;     // целевой уровень после AGC
+const LIVE_MIN_RMS = 0.0008;      // ниже — считаем тишиной
+const LIVE_SYNC_MAX_ERRORS = 3;   // допуск ошибок в sync
+const LIVE_MAX_LEN = 4000;        // максимум байт в одном пакете
+
 function crc16(bytes){
   let crc = 0xFFFF;
   for(let i=0;i<bytes.length;i++){
@@ -934,20 +940,18 @@ function demodulateBits(pcm, sr, baud, f0, f1){
   const cos1 = new Float32Array(spb), sin1 = new Float32Array(spb);
   for(let j=0;j<spb;j++){
     const t = j / sr;
-    const p0 = 2 * Math.PI * f0 * t;
-    const p1 = 2 * Math.PI * f1 * t;
-    cos0[j] = Math.cos(p0); sin0[j] = Math.sin(p0);
-    cos1[j] = Math.cos(p1); sin1[j] = Math.sin(p1);
+    cos0[j] = Math.cos(2*Math.PI*f0*t); sin0[j] = Math.sin(2*Math.PI*f0*t);
+    cos1[j] = Math.cos(2*Math.PI*f1*t); sin1[j] = Math.sin(2*Math.PI*f1*t);
   }
   for(let b=0;b<nBits;b++){
     const start = b*spb;
     let i0=0,q0=0,i1=0,q1=0;
     for(let j=0;j<spb;j++){
       const v = pcm[start+j];
-      i0 += v * cos0[j]; q0 += v * sin0[j];
-      i1 += v * cos1[j]; q1 += v * sin1[j];
+      i0 += v*cos0[j]; q0 += v*sin0[j];
+      i1 += v*cos1[j]; q1 += v*sin1[j];
     }
-    const e0 = i0*i0 + q0*q0, e1 = i1*i1 + q1*q1;
+    const e0 = i0*i0+q0*q0, e1 = i1*i1+q1*q1;
     bits[b] = (e1 > e0) ? 1 : 0;
   }
   return bits;
@@ -1087,27 +1091,40 @@ $('#btnDlT2cWav').onclick = ()=>{
 };
 
 /* ============================================================
-   Code to Text — Live декодер
+   Code to Text — Live декодер (устойчивый к шуму и тихому звуку)
    ============================================================ */
 let liveState = {
   stream: null, ctx: null, source: null, proc: null,
   active: false,
+  // буфер оцифрованных сэмплов (накапливаем, чтобы корреляторы работали по окнам)
+  pcm: [],
+  // состояние AGC
+  agcRms: LIVE_TARGET_RMS,
+  // сырые биты и позиция поиска sync
   rawBits: [],
   syncFound: false,
   syncPos: 0,
+  // накопленные биты после Manchester (первый бит = MSB длины)
   manOut: [],
+  // результат
   byteCount: 0,
   fullText: '',
+  crcOk: null,
+  lastProcessedSamples: 0,
   _cache: null
 };
 
 function resetLive(){
+  liveState.pcm = [];
+  liveState.agcRms = LIVE_TARGET_RMS;
   liveState.rawBits = [];
   liveState.syncFound = false;
   liveState.syncPos = 0;
   liveState.manOut = [];
   liveState.byteCount = 0;
   liveState.fullText = '';
+  liveState.crcOk = null;
+  liveState.lastProcessedSamples = 0;
   liveState._cache = null;
   $('#liveText').innerHTML = '<span class="cursor">▌</span>';
   $('#liveCount').textContent = '0';
@@ -1117,91 +1134,172 @@ function escapeHtml(s){
   return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* Выбор лучшей фазы внутри одного бита: возвращает {bit, phase, quality}.
+   Ищет фазу p в [0, spb), при которой энергия разностного сигнала максимальна. */
+function demodBitBestPhase(samples, sr, baud, f0, f1){
+  const spb = Math.round(sr / baud);
+  if(!liveState._cache || liveState._cache.sr !== sr || liveState._cache.spb !== spb){
+    const c0 = new Float32Array(spb), s0 = new Float32Array(spb);
+    const c1 = new Float32Array(spb), s1 = new Float32Array(spb);
+    for(let j=0;j<spb;j++){
+      const t = j / sr;
+      c0[j] = Math.cos(2*Math.PI*f0*t); s0[j] = Math.sin(2*Math.PI*f0*t);
+      c1[j] = Math.cos(2*Math.PI*f1*t); s1[j] = Math.sin(2*Math.PI*f1*t);
+    }
+    liveState._cache = { sr, spb, c0, s0, c1, s1 };
+  }
+  const { c0, s0, c1, s1 } = liveState._cache;
+  const phases = [];
+  const step = Math.max(1, Math.floor(spb / 16));
+  for(let p=0; p<spb; p+=step) phases.push(p);
+
+  let best = null;
+  for(const p of phases){
+    let i0=0,q0=0,i1=0,q1=0;
+    const end = Math.min(p + spb, samples.length);
+    const n = end - p;
+    for(let j=0;j<n;j++){
+      const v = samples[p+j];
+      i0 += v*c0[j]; q0 += v*s0[j];
+      i1 += v*c1[j]; q1 += v*s1[j];
+    }
+    const e0 = i0*i0+q0*q0;
+    const e1 = i1*i1+q1*q1;
+    const diff = Math.abs(e1-e0);
+    if(!best || diff > best.diff){
+      best = { bit: e1 > e0 ? 1 : 0, phase: p, diff, quality: diff / (e0+e1+1e-20) };
+    }
+  }
+  return best;
+}
+
+/* Обработка нового чанка PCM. Возвращает обновлённый текст (если что-то декодировалось). */
+async function liveProcessSampleChunk(floatChunk, sr){
+  // 1) AGC: оцениваем RMS чанка и подтягиваем уровень к TARGET
+  let sum = 0;
+  for(let i=0;i<floatChunk.length;i++) sum += floatChunk[i]*floatChunk[i];
+  const rms = Math.sqrt(sum / floatChunk.length);
+  if(rms > LIVE_MIN_RMS){
+    // сглаживание
+    liveState.agcRms = 0.85*liveState.agcRms + 0.15*rms;
+  }
+  const gain = Math.min(50, LIVE_TARGET_RMS / Math.max(liveState.agcRms, LIVE_MIN_RMS));
+  const norm = new Float32Array(floatChunk.length);
+  for(let i=0;i<floatChunk.length;i++) norm[i] = floatChunk[i]*gain;
+
+  // 2) накапливаем в общий PCM-буфер
+  liveState.pcm.push(...norm);
+
+  // 3) декодируем по полным битам, начиная с lastProcessedSamples
+  const spb = Math.round(sr / FSK_BAUD);
+  let bitStart = Math.floor(liveState.lastProcessedSamples / spb);
+  const totalBits = Math.floor(liveState.pcm.length / spb);
+
+  // ограничим память: если буфер слишком большой, оставим хвост
+  if(liveState.pcm.length > sr * 60){ // > 60 сек
+    const keep = sr * 30;
+    const cut = liveState.pcm.length - keep;
+    liveState.pcm.splice(0, cut);
+    liveState.rawBits = liveState.rawBits.slice(Math.floor(cut / spb));
+  }
+
+  const newBits = [];
+  for(let b=bitStart; b<totalBits; b++){
+    const start = b*spb;
+    const window = liveState.pcm.subarray(start, Math.min(start+spb, liveState.pcm.length));
+    const best = demodBitBestPhase(window, sr, FSK_BAUD, FSK_F0, FSK_F1);
+    newBits.push(best.bit);
+    liveState.rawBits.push(best.bit);
+  }
+  liveState.lastProcessedSamples = totalBits * spb;
+
+  if(newBits.length === 0) return;
+
+  // 4) поиск синхрослова, если ещё не найден
+  if(!liveState.syncFound){
+    const syncBits = [];
+    for(let i=15;i>=0;i--) syncBits.push((SYNC_WORD >> i) & 1);
+    const rb = liveState.rawBits;
+    // ищем по всей истории с допуском по ошибкам
+    let bestPos = -1, bestErr = 999;
+    for(let start=0; start+16 <= rb.length; start++){
+      let err = 0;
+      for(let i=0;i<16;i++) err += (rb[start+i] !== syncBits[i]) ? 1 : 0;
+      if(err < bestErr){ bestErr = err; bestPos = start; }
+      if(err === 0) break;
+    }
+    if(bestPos >= 0 && bestErr <= LIVE_SYNC_MAX_ERRORS){
+      liveState.syncFound = true;
+      liveState.syncPos = bestPos + 16;
+      liveState.manOut = [];
+      // пробуем декодировать от syncPos до конца
+      manchesterFrom(liveState.syncPos);
+    } else {
+      // держим буфер разумным
+      if(rb.length > 8000){
+        const cut = rb.length - 400;
+        liveState.rawBits = rb.slice(cut);
+      }
+      return;
+    }
+  }
+
+  // 5) Manchester-декодирование от syncPos
+  manchesterFrom(liveState.syncPos);
+
+  // 6) обновление текста
+  renderLiveText();
+}
+
+function manchesterFrom(syncPos){
+  const rb = liveState.rawBits;
+  const out = [];
+  for(let i=syncPos; i+1 < rb.length; i+=2){
+    const a = rb[i], b = rb[i+1];
+    if(a === 0 && b === 1) out.push(1);
+    else if(a === 1 && b === 0) out.push(0);
+    else out.push(0); // мягкая коррекция — в шумном канале лучше не терять биты
+  }
+  liveState.manOut = out;
+}
+
 function renderLiveText(){
   const man = liveState.manOut;
   if(man.length < 16) return;
+
+  // длина (16 бит MSB-first)
   let len = 0;
   for(let i=0;i<16;i++) len = (len << 1) | man[i];
-  if(len < 0 || len > 2000) return;
+  if(len <= 0 || len > LIVE_MAX_LEN) return;
+
+  // сколько байт уже есть
   const haveBytes = Math.min(len, Math.floor((man.length - 16) / 8));
-  if(haveBytes <= liveState.byteCount) return;
+  if(haveBytes <= 0) return;
+
+  // пересобираем полностью каждый раз — так корректнее при появлении новых байт
   const bytes = new Uint8Array(haveBytes);
   for(let bi=0;bi<haveBytes;bi++){
     let v = 0;
     for(let k=0;k<8;k++) v = (v << 1) | man[16 + bi*8 + k];
     bytes[bi] = v;
   }
+
+  // текст
   const text = new TextDecoder('utf-8', {fatal:false}).decode(bytes);
-  if(text.length > liveState.fullText.length){
+  if(text !== liveState.fullText){
     liveState.fullText = text;
     liveState.byteCount = haveBytes;
     $('#liveText').innerHTML = escapeHtml(text) + '<span class="cursor">▌</span>';
     $('#liveCount').textContent = String([...text].length);
   }
-}
 
-async function liveProcessSampleChunk(floatChunk, sr){
-  const spb = Math.round(sr / FSK_BAUD);
-  const nBits = Math.floor(floatChunk.length / spb);
-  if(nBits === 0) return;
-
-  if(!liveState._cache || liveState._cache.sr !== sr || liveState._cache.spb !== spb){
-    const c0 = new Float32Array(spb), s0 = new Float32Array(spb);
-    const c1 = new Float32Array(spb), s1 = new Float32Array(spb);
-    for(let j=0;j<spb;j++){
-      const t = j / sr;
-      c0[j] = Math.cos(2*Math.PI*FSK_F0*t);
-      s0[j] = Math.sin(2*Math.PI*FSK_F0*t);
-      c1[j] = Math.cos(2*Math.PI*FSK_F1*t);
-      s1[j] = Math.sin(2*Math.PI*FSK_F1*t);
-    }
-    liveState._cache = { sr, spb, cos0: c0, sin0: s0, cos1: c1, sin1: s1 };
+  // CRC, если все байты получены
+  if(haveBytes === len && man.length >= 16 + len*8 + 16){
+    let crcRecv = 0;
+    for(let i=0;i<16;i++) crcRecv = (crcRecv << 1) | man[16 + len*8 + i];
+    const crcCalc = crc16(bytes);
+    liveState.crcOk = (crcRecv === crcCalc);
   }
-  const { cos0, sin0, cos1, sin1 } = liveState._cache;
-
-  for(let b=0;b<nBits;b++){
-    const start = b*spb;
-    let i0=0,q0=0,i1=0,q1=0;
-    for(let j=0;j<spb;j++){
-      const v = floatChunk[start+j];
-      i0 += v * cos0[j]; q0 += v * sin0[j];
-      i1 += v * cos1[j]; q1 += v * sin1[j];
-    }
-    const e0 = i0*i0 + q0*q0, e1 = i1*i1 + q1*q1;
-    liveState.rawBits.push((e1 > e0) ? 1 : 0);
-  }
-
-  if(!liveState.syncFound){
-    const syncBits = [];
-    for(let i=15;i>=0;i--) syncBits.push((SYNC_WORD >> i) & 1);
-    const rb = liveState.rawBits;
-    for(let start=liveState.syncPos; start+16 <= rb.length; start++){
-      let err = 0;
-      for(let i=0;i<16;i++) err += (rb[start+i] !== syncBits[i]) ? 1 : 0;
-      if(err <= 2){
-        liveState.syncFound = true;
-        liveState.syncPos = start + 16;
-        break;
-      }
-    }
-    if(!liveState.syncFound){
-      if(liveState.rawBits.length > 4000){
-        liveState.rawBits = liveState.rawBits.slice(-100);
-      }
-      return;
-    }
-  }
-
-  const rb = liveState.rawBits;
-  liveState.manOut = [];
-  for(let i=liveState.syncPos; i+1 < rb.length; i+=2){
-    const a = rb[i], b = rb[i+1];
-    if(a === 0 && b === 1) liveState.manOut.push(1);
-    else if(a === 1 && b === 0) liveState.manOut.push(0);
-    else liveState.manOut.push(0);
-  }
-
-  renderLiveText();
 }
 
 $('#btnMicListen').onclick = async ()=>{
@@ -1209,7 +1307,12 @@ $('#btnMicListen').onclick = async ()=>{
   resetLive();
   try{
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 1
+      }
     });
     liveState.stream = stream;
     const ctx = getAudioCtx();
@@ -1217,7 +1320,8 @@ $('#btnMicListen').onclick = async ()=>{
     if(ctx.state === 'suspended') await ctx.resume();
     const src = ctx.createMediaStreamSource(stream);
     liveState.source = src;
-    const proc = ctx.createScriptProcessor(2048, 1, 1);
+    // буфер больше, чтобы корреляторы работали по полным битам
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
     liveState.proc = proc;
     liveState.active = true;
 
@@ -1228,7 +1332,11 @@ $('#btnMicListen').onclick = async ()=>{
       for(let i=0;i<input.length;i++) peak = Math.max(peak, Math.abs(input[i]));
       $('#micLevel').style.width = Math.min(100, peak*200) + '%';
       $('#micLevelTxt').textContent = Math.min(100, Math.round(peak*200)) + '%';
-      liveProcessSampleChunk(new Float32Array(input), ctx.sampleRate).catch(()=>{});
+      // копируем данные — буфер переиспользуется браузером
+      const copy = new Float32Array(input);
+      liveProcessSampleChunk(copy, ctx.sampleRate).catch(err=>{
+        console.error('live decode error', err);
+      });
     };
 
     src.connect(proc);
@@ -1255,6 +1363,43 @@ $('#btnMicListenStop').onclick = async ()=>{
     if(liveState.stream) liveState.stream.getTracks().forEach(t=>t.stop());
   }catch(e){}
 
+  // финальный проход по всему буферу — на случай, если последние байты не успели
+  try{
+    if(liveState.pcm.length > 0){
+      // пересчитываем все биты с начала (без потери последнего чанка)
+      const sr = liveState.ctx.sampleRate;
+      const spb = Math.round(sr / FSK_BAUD);
+      const totalBits = Math.floor(liveState.pcm.length / spb);
+      const bits = [];
+      for(let b=0;b<totalBits;b++){
+        const start = b*spb;
+        const window = liveState.pcm.subarray(start, Math.min(start+spb, liveState.pcm.length));
+        const best = demodBitBestPhase(window, sr, FSK_BAUD, FSK_F0, FSK_F1);
+        bits.push(best.bit);
+      }
+      liveState.rawBits = bits;
+      // переищем sync
+      liveState.syncFound = false;
+      const syncBits = [];
+      for(let i=15;i>=0;i--) syncBits.push((SYNC_WORD >> i) & 1);
+      let bestPos = -1, bestErr = 999;
+      for(let start=0; start+16 <= bits.length; start++){
+        let err = 0;
+        for(let i=0;i<16;i++) err += (bits[start+i] !== syncBits[i]) ? 1 : 0;
+        if(err < bestErr){ bestErr = err; bestPos = start; }
+        if(err === 0) break;
+      }
+      if(bestPos >= 0 && bestErr <= LIVE_SYNC_MAX_ERRORS){
+        liveState.syncFound = true;
+        liveState.syncPos = bestPos + 16;
+        manchesterFrom(liveState.syncPos);
+        renderLiveText();
+      }
+    }
+  }catch(e){
+    console.error('final pass', e);
+  }
+
   const finalText = liveState.fullText || '';
   state.c2tText = finalText;
   $('#c2tOut').value = finalText;
@@ -1265,9 +1410,14 @@ $('#btnMicListenStop').onclick = async ()=>{
   add('Бит сырых', String(liveState.rawBits.length));
   add('Sync найден', liveState.syncFound ? 'да' : 'нет');
   add('Manchester бит', String(liveState.manOut.length));
+  add('CRC16', liveState.crcOk === null ? '—' : (liveState.crcOk ? '✓ OK' : '✗ ошибка'));
   if(finalText.length > 0){
     $('#c2tResult').classList.remove('hidden');
-    showMsg($('#msgMicListen'), 'Готово.', 'ok');
+    showMsg($('#msgMicListen'),
+      liveState.crcOk === false
+        ? 'Готово, но CRC не совпал — возможны искажения. Попробуйте ближе/громче.'
+        : 'Готово.',
+      liveState.crcOk === false ? 'warn' : 'ok');
   } else {
     showMsg($('#msgMicListen'), 'Не удалось распознать. Запустите WAV ближе к микрофону и с начала.', 'warn');
   }
