@@ -99,7 +99,7 @@
         Перетащите файл сюда или нажмите, чтобы выбрать<br>
         <span class="muted">Аудио · Видео · MP3 · WAV · FLAC · AAC · M4A · OGG · MP4 · MOV · WebM</span>
       </div>
-      <input id="fileEnc" type="file" class="hidden" accept="audio/*,image/*,text/plain,.txt,.md,.json,.csv,.xml">
+      <input id="fileEnc" type="file" class="hidden" accept="*/*">
       <div id="msgEnc" class="msg"></div>
 
       <div id="encInfo" class="hidden" style="margin-top:14px">
@@ -145,6 +145,18 @@
       <div class="row" style="margin-top:12px"><button class="primary" id="btnTextToC2a">Сохранить текст в .c2a</button></div>
       <div id="msgTextC2a" class="msg"></div>
     </div>
+    <div class="panel">
+      <h2>Файл → Audio</h2>
+      <div class="muted">Побитовая передача фото, текста и других файлов через звуковой сигнал. Максимальный размер — 256 КБ.</div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="btnFileToAudio" disabled>Создать WAV для передачи</button>
+        <button id="btnDlFileAudio" disabled>Скачать WAV</button>
+      </div>
+      <div class="bar" style="margin-top:12px"><i id="fileAudioEncodeProgress"></i></div>
+      <div id="fileAudioEncodeStatus" class="status"></div>
+      <div id="msgFileAudioEncode" class="msg"></div>
+      <audio id="fileAudioPreview" class="hidden" controls style="width:100%;margin-top:12px"></audio>
+    </div>
   </section>
 
   <!-- CODE → AUDIO -->
@@ -178,6 +190,27 @@
         </div>
       </div>
     </div>
+<div class="panel" id="fileAudioReceiver">
+    <h2>Audio → Файл</h2>
+    <div class="muted">Восстановление файла из WAV или напрямую через микрофон. Блоки собираются автоматически, целостность проверяется по CRC32.</div>
+    <div id="dropFileAudio" class="drop" style="margin-top:12px">Перетащите WAV сюда или нажмите для выбора</div>
+    <input id="fileAudioUpload" type="file" class="hidden" accept=".wav,audio/wav,audio/*">
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="btnFileMicStart">Принимать через микрофон</button>
+      <button class="danger" id="btnFileMicStop" disabled>Остановить и собрать файл</button>
+    </div>
+    <div class="muted" style="margin-top:8px">Уровень микрофона: <b id="fileMicLevelTxt">0%</b> · Записано: <b id="fileMicDuration">0.0 с</b></div>
+    <div class="level"><i id="fileMicLevel"></i></div>
+    <div class="bar" style="margin-top:12px"><i id="fileAudioRxProgress"></i></div>
+    <div id="fileAudioRxStatus" class="status"></div>
+    <div id="msgFileAudioRx" class="msg"></div>
+    <div id="fileAudioRxResult" class="hidden" style="margin-top:14px">
+      <div class="kv" id="fileAudioRxInfo"></div>
+      <img id="fileAudioRxImage" class="hidden" alt="Восстановленное изображение" style="max-width:100%;max-height:520px;object-fit:contain;border-radius:12px;margin-top:12px">
+      <textarea id="fileAudioRxText" class="hidden" readonly style="margin-top:12px;min-height:120px"></textarea>
+      <a id="fileAudioRxDownload" class="tab" style="display:inline-block;margin-top:12px" download>Скачать восстановленный файл</a>
+    </div>
+  </div>
 <div class="muted" style="margin:0 0 12px">Акустическая передача текста через WAV и микрофон.</div>
   <section id="tab-t2c" class="panel">
     <div class="panel">
@@ -725,9 +758,9 @@ function fileExt(name){ const i = name.lastIndexOf('.'); return i>=0 ? name.slic
 
 bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
   hideMsg($('#msgEnc')); hideMsg($('#msgEnc2')); $('#encResult').classList.add('hidden');
-  state.genericFile=null;
+  state.genericFile=null;$('#btnFileToAudio').disabled=true;
   const ext=fileExt(file.name);
-  if(file.type.startsWith('image/')||IMG_EXT.includes(ext)||file.type.startsWith('text/')||['txt','md','json','csv','xml'].includes(ext)){
+  if(!file.type.startsWith('audio/')&&!file.type.startsWith('video/')&&!AUDIO_EXT.includes(ext)&&!VIDEO_EXT.includes(ext)){
     state.genericFile=file; state.encFileInfo={name:file.name,type:'фото'}; state.encOriginalFileSize=file.size;
     const kv=$('#encInfoKv'); kv.innerHTML='';
     const add=(k,v)=>{const d=document.createElement('div');d.innerHTML='<span>'+k+'</span><span>'+v+'</span>';kv.appendChild(d);};
@@ -735,7 +768,7 @@ bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
     $('#encInfo').classList.remove('hidden');$('#encAudio').classList.add('hidden');
     document.querySelector('.wavebox').classList.add('hidden');
     $('#trimStart').parentElement.parentElement.classList.add('hidden');$('#trimDur').parentElement.classList.add('hidden');
-    $('#btnEncode').disabled=false;$('#btnPlaySel').disabled=true;
+    $('#btnEncode').disabled=false;$('#btnPlaySel').disabled=true;$('#btnFileToAudio').disabled=false;
     showMsg($('#msgEnc'),'Файл загружен. Исходные байты будут сохранены без изменений.','ok');return;
   }
   $('#encAudio').classList.remove('hidden');document.querySelector('.wavebox').classList.remove('hidden');
@@ -774,7 +807,7 @@ $('#btnEncode').onclick = async ()=>{
       add('Тип',state.genericFile.type.startsWith('text/')?'Текст · без потерь':'Фото · без потерь');add('Оригинал',raw.length.toLocaleString()+' Б');add('C2A',state.encC2aBytes.length.toLocaleString()+' Б');add('Сохранение','Побитово');
       $('#encResult').classList.remove('hidden');$('#encProgress').style.width='100%';
       $('#encStatus').textContent='Готово: исходные байты сохранены без изменений.';
-      showMsg($('#msgEnc2'),'Фото упаковано без потери качества. Служебные данные увеличивают размер контейнера.','ok');
+      showMsg($('#msgEnc2'),'Файл упакован без потери данных. Служебные данные увеличивают размер контейнера.','ok');
     }catch(e){showMsg($('#msgEnc2'),'Ошибка: '+(e.message||e),'err');}
     finally{$('#btnEncode').disabled=false;}
     return;
