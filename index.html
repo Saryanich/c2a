@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>C2A — Code to Audio</title>
+<title>C2A — File to Code / File to Audio</title>
 <style>
   :root{
     --bg:#0b0f14; --panel:#121821; --panel2:#182231; --line:#243244;
@@ -81,16 +81,14 @@
 
 <header>
   <div class="logo">C2A</div>
-  <div class="sub">Code&nbsp;to&nbsp;Audio — гарантия размера через перебор</div>
+  <div class="sub">File to Code · File to Audio</div>
 </header>
 
 <main>
 
   <div class="tabs">
-    <div class="tab active" data-tab="enc">Audio → Code</div>
-    <div class="tab" data-tab="dec">Code → Audio</div>
-    <div class="tab" data-tab="t2c">Text to Code</div>
-    <div class="tab" data-tab="c2t">Code to Text</div>
+    <div class="tab active" data-tab="enc">File to Code</div>
+    <div class="tab" data-tab="dec">File to Audio</div>
   </div>
 
   <!-- AUDIO → CODE -->
@@ -101,7 +99,7 @@
         Перетащите файл сюда или нажмите, чтобы выбрать<br>
         <span class="muted">Аудио · Видео · MP3 · WAV · FLAC · AAC · M4A · OGG · MP4 · MOV · WebM</span>
       </div>
-      <input id="fileEnc" type="file" class="hidden">
+      <input id="fileEnc" type="file" class="hidden" accept="audio/*,image/*">
       <div id="msgEnc" class="msg"></div>
 
       <div id="encInfo" class="hidden" style="margin-top:14px">
@@ -141,6 +139,12 @@
         </div>
       </div>
     </div>
+<div class="panel">
+      <h2>Текст → C2A</h2>
+      <textarea id="fileTextInput" placeholder="Введите текст для сохранения в .c2a"></textarea>
+      <div class="row" style="margin-top:12px"><button class="primary" id="btnTextToC2a">Сохранить текст в .c2a</button></div>
+      <div id="msgTextC2a" class="msg"></div>
+    </div>
   </section>
 
   <!-- CODE → AUDIO -->
@@ -160,6 +164,11 @@
         <div class="bar" style="margin-top:12px"><i id="decProgress"></i></div>
         <div id="decStatus" class="status"></div>
       </div>
+      <div id="decGenericResult" class="hidden" style="margin-top:14px">
+        <img id="decGenericImage" class="hidden" alt="Восстановленное фото" style="max-width:100%;max-height:520px;border-radius:12px">
+        <textarea id="decGenericText" class="hidden" readonly></textarea>
+        <a id="decGenericDownload" class="tab" style="display:inline-block;margin-top:12px" download>Скачать файл</a>
+      </div>
       <div id="decResult" class="hidden" style="margin-top:14px">
         <h3>Восстановленное аудио</h3>
         <audio id="decAudio" controls></audio>
@@ -169,12 +178,10 @@
         </div>
       </div>
     </div>
-  </section>
-
-  <!-- TEXT TO CODE -->
-  <section id="tab-t2c" class="tabpane hidden">
+<div class="muted" style="margin:0 0 12px">Акустическая передача текста через WAV и микрофон.</div>
+  <section id="tab-t2c" class="panel">
     <div class="panel">
-      <h2>Text to Code — текст → WAV (FSK)</h2>
+      <h2>Текст → Audio (WAV / FSK)</h2>
       <textarea id="t2cInput" placeholder="Привет, C2A! X7#kL92_!qP0"></textarea>
       <div class="row" style="margin-top:12px">
         <button class="primary" id="btnT2cEncode">Сгенерировать WAV из текста</button>
@@ -192,10 +199,10 @@
     </div>
   </section>
 
-  <!-- CODE TO TEXT -->
-  <section id="tab-c2t" class="tabpane hidden">
+
+  <section id="tab-c2t" class="panel">
     <div class="panel">
-      <h2>Code to Text — WAV / микрофон → текст (live)</h2>
+      <h2>Приём текста по аудио (Live)</h2>
 
       <h3>Способ 1: загрузить WAV</h3>
       <div id="dropC2t" class="drop">
@@ -225,9 +232,12 @@
     </div>
   </section>
 
+
+  </section>
+
 </main>
 
-<footer>C2A · гарантия размера через перебор + акустический текст</footer>
+<footer>C2A · универсальная передача файлов</footer>
 
 <script>
 /* ============================================================
@@ -257,6 +267,26 @@ function crc32(bytes){
   for(let i=0;i<bytes.length;i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
+const C2A_FILE_MAGIC=[0x43,0x32,0x46,0x37];
+function encodeGenericC2A(file,bytes){
+  const meta=new TextEncoder().encode(JSON.stringify({name:file.name||'text.txt',type:file.type||'application/octet-stream',size:bytes.length}));
+  if(meta.length>65535) throw new Error('Слишком длинные метаданные');
+  const out=new Uint8Array(16+meta.length+bytes.length);
+  out.set(C2A_FILE_MAGIC,0);
+  const dv=new DataView(out.buffer);
+  dv.setUint16(4,7,true); dv.setUint16(6,meta.length,true); dv.setUint32(8,bytes.length,true);
+  out.set(meta,16); out.set(bytes,16+meta.length); dv.setUint32(12,crc32(out.subarray(16)),true);
+  return out;
+}
+function isGenericC2A(bytes){return !!bytes&&bytes.length>=16&&C2A_FILE_MAGIC.every((v,i)=>bytes[i]===v);}
+function decodeGenericC2A(bytes){
+  if(!isGenericC2A(bytes)) throw new Error('Неверный формат файла C2A');
+  const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength), ml=dv.getUint16(6,true), dl=dv.getUint32(8,true);
+  if(16+ml+dl!==bytes.length) throw new Error('Некорректная длина контейнера');
+  if(crc32(bytes.subarray(16))!==dv.getUint32(12,true)) throw new Error('Ошибка CRC32');
+  return {meta:JSON.parse(new TextDecoder().decode(bytes.subarray(16,16+ml))),bytes:bytes.slice(16+ml)};
+}
+
 function hashStr(s){
   let h = 0x811c9dc5;
   for(let i=0;i<s.length;i++){
@@ -280,6 +310,8 @@ const state = {
   encFileInfo: null,
   encOriginalFileSize: 0,
   encC2aBytes: null,
+  genericFile: null,
+  decGeneric: null,
   decC2aBytes: null,
   decWavBytes: null,
   t2cWav: null,
@@ -692,30 +724,36 @@ const IMG_EXT = ['jpg','jpeg','png','gif','bmp','webp','heic','heif','svg','tiff
 function fileExt(name){ const i = name.lastIndexOf('.'); return i>=0 ? name.slice(i+1).toLowerCase() : ''; }
 
 bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
-  hideMsg($('#msgEnc'));
-  hideMsg($('#msgEnc2'));
-  $('#encResult').classList.add('hidden');
-  const ext = fileExt(file.name);
-  if(IMG_EXT.includes(ext)){
-    showMsg($('#msgEnc'), 'Формат ' + ext.toUpperCase() + ' не поддерживается.', 'err');
-    return;
+  hideMsg($('#msgEnc')); hideMsg($('#msgEnc2')); $('#encResult').classList.add('hidden');
+  state.genericFile=null;
+  const ext=fileExt(file.name);
+  if(file.type.startsWith('image/')||IMG_EXT.includes(ext)){
+    state.genericFile=file; state.encFileInfo={name:file.name,type:'фото'}; state.encOriginalFileSize=file.size;
+    const kv=$('#encInfoKv'); kv.innerHTML='';
+    const add=(k,v)=>{const d=document.createElement('div');d.innerHTML='<span>'+k+'</span><span>'+v+'</span>';kv.appendChild(d);};
+    add('Файл',file.name);add('Тип','Фото');add('Размер',file.size.toLocaleString()+' Б');
+    $('#encInfo').classList.remove('hidden');$('#encAudio').classList.add('hidden');
+    document.querySelector('.wavebox').classList.add('hidden');
+    $('#trimStart').parentElement.parentElement.classList.add('hidden');$('#trimDur').parentElement.classList.add('hidden');
+    $('#btnEncode').disabled=false;$('#btnPlaySel').disabled=true;
+    showMsg($('#msgEnc'),'Фото загружено. Исходный файл будет сохранён без изменения байтов.','ok');return;
   }
-  try{
-    const ab = await file.arrayBuffer();
-    try{
-      await setEncBufferFromArrayBuffer(ab, file.name, file.size);
-      showMsg($('#msgEnc'), 'Файл загружен: ' + file.name + ' (' + file.size.toLocaleString() + ' Б)', 'ok');
-    }catch(e){
-      if(ext && !AUDIO_EXT.includes(ext) && !VIDEO_EXT.includes(ext)){
-        showMsg($('#msgEnc'), 'Формат ' + ext.toUpperCase() + ' не поддерживается.', 'err');
-      } else {
-        showMsg($('#msgEnc'), 'Не удалось декодировать: ' + (e.message||e), 'err');
-      }
-    }
-  }catch(e){
-    showMsg($('#msgEnc'), 'Ошибка чтения: ' + (e.message||e), 'err');
-  }
+  $('#encAudio').classList.remove('hidden');document.querySelector('.wavebox').classList.remove('hidden');
+  $('#trimStart').parentElement.parentElement.classList.remove('hidden');$('#trimDur').parentElement.classList.remove('hidden');
+  try{const ab=await file.arrayBuffer();await setEncBufferFromArrayBuffer(ab,file.name,file.size);showMsg($('#msgEnc'),'Файл загружен: '+file.name+' ('+file.size.toLocaleString()+' Б)','ok');}
+  catch(e){showMsg($('#msgEnc'),'Не удалось открыть аудио: '+(e.message||e),'err');}
 });
+
+$('#btnTextToC2a').onclick=()=>{
+  hideMsg($('#msgTextC2a'));const value=$('#fileTextInput').value;
+  if(!value){showMsg($('#msgTextC2a'),'Введите текст.','err');return;}
+  try{
+    const bytes=new TextEncoder().encode(value),file=new File([bytes],'text.txt',{type:'text/plain;charset=utf-8'});
+    const packed=encodeGenericC2A(file,bytes),blob=new Blob([packed],{type:'application/octet-stream'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='text.c2a';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+    showMsg($('#msgTextC2a'),'Текст сохранён в C2A без изменения символов.','ok');
+  }catch(e){showMsg($('#msgTextC2a'),'Ошибка: '+(e.message||e),'err');}
+};
 
 $('#btnPlaySel').onclick = ()=>{
   const buf = getSelectionBuffer();
@@ -726,6 +764,21 @@ $('#btnPlaySel').onclick = ()=>{
 
 $('#btnEncode').onclick = async ()=>{
   hideMsg($('#msgEnc2'));
+  if(state.genericFile){
+    try{
+      $('#btnEncode').disabled=true;
+      const raw=new Uint8Array(await state.genericFile.arrayBuffer());
+      state.encC2aBytes=encodeGenericC2A(state.genericFile,raw);
+      const stats=$('#encStats');stats.innerHTML='';
+      const add=(k,v)=>{const d=document.createElement('div');d.className='stat';d.innerHTML='<span>'+k+'</span><b>'+v+'</b>';stats.appendChild(d);};
+      add('Тип','Фото · без потерь');add('Оригинал',raw.length.toLocaleString()+' Б');add('C2A',state.encC2aBytes.length.toLocaleString()+' Б');add('Сохранение','Побитово');
+      $('#encResult').classList.remove('hidden');$('#encProgress').style.width='100%';
+      $('#encStatus').textContent='Готово: исходные байты сохранены без изменений.';
+      showMsg($('#msgEnc2'),'Фото упаковано без потери качества. Служебные данные увеличивают размер контейнера.','ok');
+    }catch(e){showMsg($('#msgEnc2'),'Ошибка: '+(e.message||e),'err');}
+    finally{$('#btnEncode').disabled=false;}
+    return;
+  }
   $('#encResult').classList.add('hidden');
   try{
     const buf = getSelectionBuffer();
@@ -809,6 +862,12 @@ $('#btnToDec').onclick = ()=>{
    Code → Audio
    ============================================================ */
 function showDecInfo(bytes){
+  if(isGenericC2A(bytes)){
+    const g=decodeGenericC2A(bytes),kv=$('#decInfoKv');kv.innerHTML='';
+    const add=(k,v)=>{const d=document.createElement('div');d.innerHTML='<span>'+k+'</span><span>'+v+'</span>';kv.appendChild(d);};
+    add('Тип',g.meta.type||'файл');add('Имя',g.meta.name);add('Размер',g.bytes.length.toLocaleString()+' Б');add('Режим','Без потерь');
+    $('#decInfo').classList.remove('hidden');$('#decResult').classList.add('hidden');return;
+  }
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const kv = $('#decInfoKv');
   kv.innerHTML = '';
@@ -843,6 +902,20 @@ bindDrop($('#dropDec'), $('#fileDec'), async file=>{
 
 $('#btnDecode').onclick = async ()=>{
   hideMsg($('#msgDec'));
+  if(state.decC2aBytes&&isGenericC2A(state.decC2aBytes)){
+    try{
+      $('#btnDecode').disabled=true;const g=decodeGenericC2A(state.decC2aBytes);
+      const blob=new Blob([g.bytes],{type:g.meta.type||'application/octet-stream'}),url=URL.createObjectURL(blob);
+      $('#decGenericResult').classList.remove('hidden');$('#decGenericDownload').href=url;
+      $('#decGenericDownload').download=g.meta.name||'restored-file';$('#decGenericDownload').textContent='Скачать '+(g.meta.name||'файл');
+      $('#decGenericImage').classList.add('hidden');$('#decGenericText').classList.add('hidden');
+      if((g.meta.type||'').startsWith('image/')){$('#decGenericImage').src=url;$('#decGenericImage').classList.remove('hidden');}
+      else if((g.meta.type||'').startsWith('text/')){$('#decGenericText').value=new TextDecoder().decode(g.bytes);$('#decGenericText').classList.remove('hidden');}
+      showMsg($('#msgDec'),'Файл восстановлен побитово. CRC32 совпадает.','ok');
+    }catch(e){showMsg($('#msgDec'),'Ошибка: '+(e.message||e),'err');}
+    finally{$('#btnDecode').disabled=false;}
+    return;
+  }
   if(!state.decC2aBytes){ showMsg($('#msgDec'),'Сначала загрузите .c2a','err'); return; }
   try{
     $('#btnDecode').disabled = true;
@@ -901,9 +974,9 @@ const SYNC_WORD = 0xD3A5;
 
 /* ---- Новые параметры устойчивости ---- */
 const LIVE_TARGET_RMS = 0.08;     // целевой уровень после AGC
-const LIVE_MIN_RMS = 0.0008;      // ниже — считаем тишиной
+const LIVE_MIN_RMS = 0.0003;      // ниже — считаем тишиной
 const LIVE_SYNC_MAX_ERRORS = 3;   // допуск ошибок в sync
-const LIVE_MAX_LEN = 4000;        // максимум байт в одном пакете
+const LIVE_MAX_LEN = 60000;        // максимум байт в одном пакете
 
 function crc16(bytes){
   let crc = 0xFFFF;
@@ -1097,7 +1170,7 @@ let liveState = {
   stream: null, ctx: null, source: null, proc: null,
   active: false,
   // буфер оцифрованных сэмплов (накапливаем, чтобы корреляторы работали по окнам)
-  pcm: [],
+  pcm: new Float32Array(0),
   // состояние AGC
   agcRms: LIVE_TARGET_RMS,
   // сырые биты и позиция поиска sync
@@ -1115,7 +1188,7 @@ let liveState = {
 };
 
 function resetLive(){
-  liveState.pcm = [];
+  liveState.pcm = new Float32Array(0);
   liveState.agcRms = LIVE_TARGET_RMS;
   liveState.rawBits = [];
   liveState.syncFound = false;
@@ -1181,14 +1254,17 @@ async function liveProcessSampleChunk(floatChunk, sr){
   const rms = Math.sqrt(sum / floatChunk.length);
   if(rms > LIVE_MIN_RMS){
     // сглаживание
-    liveState.agcRms = 0.85*liveState.agcRms + 0.15*rms;
+    liveState.agcRms = 0.65*liveState.agcRms + 0.35*rms;
   }
-  const gain = Math.min(50, LIVE_TARGET_RMS / Math.max(liveState.agcRms, LIVE_MIN_RMS));
+  const gain = Math.min(100, Math.max(1, LIVE_TARGET_RMS / Math.max(liveState.agcRms, LIVE_MIN_RMS)));
   const norm = new Float32Array(floatChunk.length);
   for(let i=0;i<floatChunk.length;i++) norm[i] = floatChunk[i]*gain;
 
   // 2) накапливаем в общий PCM-буфер
-  liveState.pcm.push(...norm);
+  const joined = new Float32Array(liveState.pcm.length + norm.length);
+  joined.set(liveState.pcm);
+  joined.set(norm, liveState.pcm.length);
+  liveState.pcm = joined;
 
   // 3) декодируем по полным битам, начиная с lastProcessedSamples
   const spb = Math.round(sr / FSK_BAUD);
@@ -1199,7 +1275,8 @@ async function liveProcessSampleChunk(floatChunk, sr){
   if(liveState.pcm.length > sr * 60){ // > 60 сек
     const keep = sr * 30;
     const cut = liveState.pcm.length - keep;
-    liveState.pcm.splice(0, cut);
+    liveState.pcm = liveState.pcm.slice(cut);
+    liveState.lastProcessedSamples = Math.max(0, liveState.lastProcessedSamples - cut);
     liveState.rawBits = liveState.rawBits.slice(Math.floor(cut / spb));
   }
 
@@ -1330,8 +1407,8 @@ $('#btnMicListen').onclick = async ()=>{
       const input = e.inputBuffer.getChannelData(0);
       let peak = 0;
       for(let i=0;i<input.length;i++) peak = Math.max(peak, Math.abs(input[i]));
-      $('#micLevel').style.width = Math.min(100, peak*200) + '%';
-      $('#micLevelTxt').textContent = Math.min(100, Math.round(peak*200)) + '%';
+      $('#micLevel').style.width = Math.min(100, peak*1000) + '%';
+      $('#micLevelTxt').textContent = Math.min(100, Math.round(peak*1000)) + '%';
       // копируем данные — буфер переиспользуется браузером
       const copy = new Float32Array(input);
       liveProcessSampleChunk(copy, ctx.sampleRate).catch(err=>{
