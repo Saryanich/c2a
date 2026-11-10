@@ -761,10 +761,13 @@ bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
   state.genericFile=null;$('#btnFileToAudio').disabled=true;
   const ext=fileExt(file.name);
   if(!file.type.startsWith('audio/')&&!file.type.startsWith('video/')&&!AUDIO_EXT.includes(ext)&&!VIDEO_EXT.includes(ext)){
-    state.genericFile=file; state.encFileInfo={name:file.name,type:'фото'}; state.encOriginalFileSize=file.size;
+    state.genericFile=file; state.encFileInfo={name:file.name,type:'файл'}; state.encOriginalFileSize=file.size;
+    $('#btnDlFileAudio').disabled=true;faEncodedWav=null;$('#fileAudioPreview').classList.add('hidden');
     const kv=$('#encInfoKv'); kv.innerHTML='';
     const add=(k,v)=>{const d=document.createElement('div');d.innerHTML='<span>'+k+'</span><span>'+v+'</span>';kv.appendChild(d);};
-    add('Файл',file.name);add('Тип',file.type.startsWith('text/')||['txt','md','json','csv','xml'].includes(ext)?'Текст':'Фото');add('Размер',file.size.toLocaleString()+' Б');
+    const isText=file.type.startsWith('text/')||['txt','md','json','csv','xml','html','css','js','py'].includes(ext);
+    const kind=isText?'Текст':file.type.startsWith('image/')||IMG_EXT.includes(ext)?'Фото':'Файл';
+    add('Файл',file.name);add('Тип',kind);add('Размер',file.size.toLocaleString()+' Б');
     $('#encInfo').classList.remove('hidden');$('#encAudio').classList.add('hidden');
     document.querySelector('.wavebox').classList.add('hidden');
     $('#trimStart').parentElement.parentElement.classList.add('hidden');$('#trimDur').parentElement.classList.add('hidden');
@@ -1590,6 +1593,14 @@ window.addEventListener('resize', ()=>{ if(state.encBuffer) drawWaveform(); });
 const FA_SR = 22050;
 const FA_SPB = 11;
 const FA_FREQS = [1000, 3000, 5000, 7000];
+const FA_OSC = FA_FREQS.map(freq=>{
+  const cos=new Float32Array(FA_SPB),sin=new Float32Array(FA_SPB);
+  for(let j=0;j<FA_SPB;j++){
+    const a=2*Math.PI*freq*j/FA_SR;
+    cos[j]=Math.cos(a);sin[j]=Math.sin(a);
+  }
+  return {cos,sin};
+});
 const FA_AMP = 0.58;
 const FA_CHUNK_SIZE = 768;
 const FA_MAX_FILE_SIZE = 262144;
@@ -1760,20 +1771,24 @@ $('#btnDlFileAudio').onclick=()=>{
   setTimeout(()=>URL.revokeObjectURL(url),5000);
 };
 
-function faReadSymbol(pcm,start){
-  if(start<0||start+FA_SPB>pcm.length)return -1;
-  let best=0,bestEnergy=-1;
+function faSymbolInfo(pcm,start){
+  if(start<0||start+FA_SPB>pcm.length)return {symbol:-1,confidence:0};
+  let best=0,first=-1,second=-1;
   for(let k=0;k<FA_FREQS.length;k++){
     let iv=0,qv=0;
-    const omega=2*Math.PI*FA_FREQS[k]/FA_SR;
+    const osc=FA_OSC[k];
     for(let j=0;j<FA_SPB;j++){
-      const v=pcm[start+j],a=omega*j;
-      iv+=v*Math.cos(a);qv+=v*Math.sin(a);
+      const v=pcm[start+j];
+      iv+=v*osc.cos[j];qv+=v*osc.sin[j];
     }
     const energy=iv*iv+qv*qv;
-    if(energy>bestEnergy){bestEnergy=energy;best=k;}
+    if(energy>first){second=first;first=energy;best=k;}
+    else if(energy>second)second=energy;
   }
-  return best;
+  return {symbol:best,confidence:(first-second)/(first+1e-12)};
+}
+function faReadSymbol(pcm,start){
+  return faSymbolInfo(pcm,start).symbol;
 }
 
 function faBytesFromPcm(pcm,start,byteCount){
@@ -1801,33 +1816,38 @@ function faFindSignalStart(pcm,from){
       if(v>peak)peak=v;
       sum+=v*v;
     }
-    if(peak>threshold&&Math.sqrt(sum/window)>threshold*0.35)return i;
+    if(peak>threshold&&Math.sqrt(sum/window)>threshold*0.35){
+      for(let j=0;j<window;j++)if(Math.abs(pcm[i+j])>threshold)return i+j;
+    }
   }
   return -1;
 }
 
 function faLocateFrame(pcm,onset){
-  let bestStart=-1,bestErrors=999,bestSyncErrors=999;
+  let bestStart=-1,bestErrors=999,bestSyncErrors=999,bestScore=-1;
   const expected=new Uint8Array(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length);
   expected.set(FA_PREAMBLE,0);
   expected.set(FA_SYNC_SYMBOLS,FA_PREAMBLE.length);
-  const from=Math.max(0,onset-FA_SPB*2);
+  const from=Math.max(0,onset-FA_SPB);
   const to=Math.min(pcm.length-expected.length*FA_SPB,onset+FA_SPB);
   for(let start=from;start<=to;start++){
-    let errors=0,syncErrors=0;
+    let errors=0,syncErrors=0,score=0;
     for(let i=0;i<expected.length;i++){
-      if(faReadSymbol(pcm,start+i*FA_SPB)!==expected[i]){
+      const info=faSymbolInfo(pcm,start+i*FA_SPB);
+      if(info.symbol!==expected[i]){
         errors++;
         if(i>=FA_PREAMBLE.length)syncErrors++;
       }
+      score+=info.confidence;
       if(errors>10||syncErrors>3)break;
     }
-    if(errors<bestErrors){
-      bestErrors=errors;bestSyncErrors=syncErrors;bestStart=start;
-      if(errors===0)break;
+    if(errors<bestErrors||
+       (errors===bestErrors&&syncErrors<bestSyncErrors)||
+       (errors===bestErrors&&syncErrors===bestSyncErrors&&score>bestScore)){
+      bestErrors=errors;bestSyncErrors=syncErrors;bestScore=score;bestStart=start;
     }
   }
-  return bestErrors<=10&&bestSyncErrors<=3?{start:bestStart,errors:bestErrors}:null;
+  return bestErrors<=10&&bestSyncErrors<=3?{start:bestStart,errors:bestErrors,confidence:bestScore}:null;
 }
 
 function faResample(input,sourceRate,targetRate){
