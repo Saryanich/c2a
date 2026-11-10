@@ -99,7 +99,7 @@
         Перетащите файл сюда или нажмите, чтобы выбрать<br>
         <span class="muted">Аудио · Видео · MP3 · WAV · FLAC · AAC · M4A · OGG · MP4 · MOV · WebM</span>
       </div>
-      <input id="fileEnc" type="file" class="hidden" accept="audio/*,image/*">
+      <input id="fileEnc" type="file" class="hidden" accept="audio/*,image/*,text/plain,.txt,.md,.json,.csv,.xml">
       <div id="msgEnc" class="msg"></div>
 
       <div id="encInfo" class="hidden" style="margin-top:14px">
@@ -727,16 +727,16 @@ bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
   hideMsg($('#msgEnc')); hideMsg($('#msgEnc2')); $('#encResult').classList.add('hidden');
   state.genericFile=null;
   const ext=fileExt(file.name);
-  if(file.type.startsWith('image/')||IMG_EXT.includes(ext)){
+  if(file.type.startsWith('image/')||IMG_EXT.includes(ext)||file.type.startsWith('text/')||['txt','md','json','csv','xml'].includes(ext)){
     state.genericFile=file; state.encFileInfo={name:file.name,type:'фото'}; state.encOriginalFileSize=file.size;
     const kv=$('#encInfoKv'); kv.innerHTML='';
     const add=(k,v)=>{const d=document.createElement('div');d.innerHTML='<span>'+k+'</span><span>'+v+'</span>';kv.appendChild(d);};
-    add('Файл',file.name);add('Тип','Фото');add('Размер',file.size.toLocaleString()+' Б');
+    add('Файл',file.name);add('Тип',file.type.startsWith('text/')||['txt','md','json','csv','xml'].includes(ext)?'Текст':'Фото');add('Размер',file.size.toLocaleString()+' Б');
     $('#encInfo').classList.remove('hidden');$('#encAudio').classList.add('hidden');
     document.querySelector('.wavebox').classList.add('hidden');
     $('#trimStart').parentElement.parentElement.classList.add('hidden');$('#trimDur').parentElement.classList.add('hidden');
     $('#btnEncode').disabled=false;$('#btnPlaySel').disabled=true;
-    showMsg($('#msgEnc'),'Фото загружено. Исходный файл будет сохранён без изменения байтов.','ok');return;
+    showMsg($('#msgEnc'),'Файл загружен. Исходные байты будут сохранены без изменений.','ok');return;
   }
   $('#encAudio').classList.remove('hidden');document.querySelector('.wavebox').classList.remove('hidden');
   $('#trimStart').parentElement.parentElement.classList.remove('hidden');$('#trimDur').parentElement.classList.remove('hidden');
@@ -771,7 +771,7 @@ $('#btnEncode').onclick = async ()=>{
       state.encC2aBytes=encodeGenericC2A(state.genericFile,raw);
       const stats=$('#encStats');stats.innerHTML='';
       const add=(k,v)=>{const d=document.createElement('div');d.className='stat';d.innerHTML='<span>'+k+'</span><b>'+v+'</b>';stats.appendChild(d);};
-      add('Тип','Фото · без потерь');add('Оригинал',raw.length.toLocaleString()+' Б');add('C2A',state.encC2aBytes.length.toLocaleString()+' Б');add('Сохранение','Побитово');
+      add('Тип',state.genericFile.type.startsWith('text/')?'Текст · без потерь':'Фото · без потерь');add('Оригинал',raw.length.toLocaleString()+' Б');add('C2A',state.encC2aBytes.length.toLocaleString()+' Б');add('Сохранение','Побитово');
       $('#encResult').classList.remove('hidden');$('#encProgress').style.width='100%';
       $('#encStatus').textContent='Готово: исходные байты сохранены без изменений.';
       showMsg($('#msgEnc2'),'Фото упаковано без потери качества. Служебные данные увеличивают размер контейнера.','ok');
