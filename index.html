@@ -1582,6 +1582,534 @@ $('#btnDlTxt').onclick = ()=>{
 };
 
 window.addEventListener('resize', ()=>{ if(state.encBuffer) drawWaveform(); });
+
+/* ============================================================
+   ФАЙЛ ЧЕРЕЗ AUDIO — пакетный 4-FSK модем
+   Побитовая передача исходных байтов, CRC32 каждого пакета и файла.
+   ============================================================ */
+const FA_SR = 22050;
+const FA_SPB = 11;
+const FA_FREQS = [1000, 3000, 5000, 7000];
+const FA_AMP = 0.58;
+const FA_CHUNK_SIZE = 768;
+const FA_MAX_FILE_SIZE = 262144;
+const FA_GAP_SAMPLES = Math.round(0.065 * FA_SR);
+const FA_PREAMBLE = new Uint8Array(48);
+for(let i=0;i<FA_PREAMBLE.length;i++) FA_PREAMBLE[i] = (i & 1) ? 3 : 0;
+const FA_SYNC_BYTES = new Uint8Array([0xD3,0x9A,0xC6,0x5B]);
+
+function faBytesToSymbols(bytes){
+  const out = new Uint8Array(bytes.length * 4);
+  let p = 0;
+  for(let i=0;i<bytes.length;i++){
+    const b = bytes[i];
+    out[p++] = (b >> 6) & 3;
+    out[p++] = (b >> 4) & 3;
+    out[p++] = (b >> 2) & 3;
+    out[p++] = b & 3;
+  }
+  return out;
+}
+
+const FA_SYNC_SYMBOLS = faBytesToSymbols(FA_SYNC_BYTES);
+
+function faMakeFrame(type,sequence,total,payload){
+  const out = new Uint8Array(20 + payload.length);
+  out.set([0x43,0x32,0x41,0x46],0); // C2AF
+  out[4] = 1;
+  out[5] = type;
+  const dv = new DataView(out.buffer);
+  dv.setUint32(6,sequence>>>0,true);
+  dv.setUint32(10,total>>>0,true);
+  dv.setUint16(14,payload.length,true);
+  out.set(payload,16);
+  dv.setUint32(16+payload.length,crc32(out.subarray(0,16+payload.length)),true);
+  return out;
+}
+
+function faSymbolsForFrame(frame){
+  const body=faBytesToSymbols(frame);
+  const out=new Uint8Array(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length+body.length);
+  out.set(FA_PREAMBLE,0);
+  out.set(FA_SYNC_SYMBOLS,FA_PREAMBLE.length);
+  out.set(body,FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length);
+  return out;
+}
+
+function faMonoToWav(samples){
+  const dataSize=samples.length*2;
+  const buffer=new ArrayBuffer(44+dataSize);
+  const dv=new DataView(buffer);
+  const write=(off,str)=>{for(let i=0;i<str.length;i++)dv.setUint8(off+i,str.charCodeAt(i));};
+  write(0,'RIFF');dv.setUint32(4,36+dataSize,true);
+  write(8,'WAVE');write(12,'fmt ');
+  dv.setUint32(16,16,true);dv.setUint16(20,1,true);
+  dv.setUint16(22,1,true);dv.setUint32(24,FA_SR,true);
+  dv.setUint32(28,FA_SR*2,true);dv.setUint16(32,2,true);
+  dv.setUint16(34,16,true);write(36,'data');dv.setUint32(40,dataSize,true);
+  let off=44;
+  for(let i=0;i<samples.length;i++){
+    const v=Math.max(-1,Math.min(1,samples[i]));
+    dv.setInt16(off,v<0?v*32768:v*32767,true);
+    off+=2;
+  }
+  return new Uint8Array(buffer);
+}
+
+async function faMakeAudioSamples(frames,onProgress){
+  let total=FA_GAP_SAMPLES;
+  const symbolFrames=[];
+  for(const frame of frames){
+    const symbols=faSymbolsForFrame(frame);
+    symbolFrames.push(symbols);
+    total+=symbols.length*FA_SPB+FA_GAP_SAMPLES;
+  }
+  const pcm=new Float32Array(total);
+  let pos=0;
+  const scale=2*Math.PI/FA_SR;
+  for(let fi=0;fi<symbolFrames.length;fi++){
+    pos+=FA_GAP_SAMPLES;
+    const symbols=symbolFrames[fi];
+    let phase=Math.PI/2;
+    for(let si=0;si<symbols.length;si++){
+      const inc=scale*FA_FREQS[symbols[si]];
+      const ramp=si<4?(si+1)/4:1;
+      for(let j=0;j<FA_SPB;j++){
+        pcm[pos++]=FA_AMP*ramp*Math.sin(phase);
+        phase+=inc;
+        if(phase>Math.PI*2)phase-=Math.PI*2;
+      }
+    }
+    if(onProgress&&(fi%8===0||fi===symbolFrames.length-1)){
+      onProgress((fi+1)/symbolFrames.length);
+      await new Promise(resolve=>setTimeout(resolve,0));
+    }
+  }
+  return pcm;
+}
+
+let faEncodedWav=null;
+let faEncodedUrl=null;
+
+$('#btnFileToAudio').onclick=async ()=>{
+  const button=$('#btnFileToAudio'),file=state.genericFile;
+  if(!file)return;
+  if(!file.size){
+    showMsg($('#msgFileAudioEncode'),'Пустой файл передавать не нужно.','err');
+    return;
+  }
+  if(file.size>FA_MAX_FILE_SIZE){
+    showMsg($('#msgFileAudioEncode'),'Файл больше 256 КБ. Уменьшите размер изображения или файла.','err');
+    return;
+  }
+  button.disabled=true;
+  $('#btnDlFileAudio').disabled=true;
+  $('#fileAudioEncodeProgress').style.width='0%';
+  $('#fileAudioPreview').classList.add('hidden');
+  hideMsg($('#msgFileAudioEncode'));
+  try{
+    const raw=new Uint8Array(await file.arrayBuffer());
+    const totalFrames=Math.ceil(raw.length/FA_CHUNK_SIZE);
+    const meta={
+      name:file.name||'received.bin',
+      type:file.type||'application/octet-stream',
+      size:raw.length,
+      chunkSize:FA_CHUNK_SIZE,
+      totalFrames:totalFrames,
+      fileCrc32:crc32(raw)
+    };
+    const metaBytes=new TextEncoder().encode(JSON.stringify(meta));
+    const frames=[faMakeFrame(0,0,totalFrames,metaBytes)];
+    for(let i=0;i<totalFrames;i++){
+      const start=i*FA_CHUNK_SIZE;
+      frames.push(faMakeFrame(1,i,totalFrames,raw.subarray(start,Math.min(raw.length,start+FA_CHUNK_SIZE))));
+    }
+    $('#fileAudioEncodeStatus').textContent='Формирование звуковых пакетов...';
+    const pcm=await faMakeAudioSamples(frames,p=>{
+      $('#fileAudioEncodeProgress').style.width=(p*85).toFixed(1)+'%';
+    });
+    $('#fileAudioEncodeStatus').textContent='Сборка WAV...';
+    await new Promise(resolve=>setTimeout(resolve,0));
+    const wav=faMonoToWav(pcm);
+    faEncodedWav=wav;
+    if(faEncodedUrl)URL.revokeObjectURL(faEncodedUrl);
+    faEncodedUrl=URL.createObjectURL(new Blob([wav],{type:'audio/wav'}));
+    $('#fileAudioPreview').src=faEncodedUrl;
+    $('#fileAudioPreview').classList.remove('hidden');
+    $('#btnDlFileAudio').disabled=false;
+    $('#fileAudioEncodeProgress').style.width='100%';
+    const seconds=pcm.length/FA_SR;
+    const kbps=(raw.length*8/seconds/1000).toFixed(2);
+    $('#fileAudioEncodeStatus').textContent='Готово · '+seconds.toFixed(1)+' с · '+wav.length.toLocaleString()+' Б WAV · '+kbps+' кбит/с';
+    showMsg($('#msgFileAudioEncode'),'WAV создан. Передавайте его целиком или включите воспроизведение рядом с микрофоном принимающего устройства.','ok');
+  }catch(e){
+    console.error(e);
+    showMsg($('#msgFileAudioEncode'),'Ошибка: '+(e.message||e),'err');
+    $('#fileAudioEncodeStatus').textContent='';
+  }finally{
+    button.disabled=!state.genericFile;
+  }
+};
+
+$('#btnDlFileAudio').onclick=()=>{
+  if(!faEncodedWav)return;
+  const url=URL.createObjectURL(new Blob([faEncodedWav],{type:'audio/wav'}));
+  const a=document.createElement('a');
+  const base=(state.genericFile?.name||'file').replace(/\.[^.]+$/,'');
+  a.href=url;a.download=base+'.c2a-audio.wav';a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
+};
+
+function faReadSymbol(pcm,start){
+  if(start<0||start+FA_SPB>pcm.length)return -1;
+  let best=0,bestEnergy=-1;
+  for(let k=0;k<FA_FREQS.length;k++){
+    let iv=0,qv=0;
+    const omega=2*Math.PI*FA_FREQS[k]/FA_SR;
+    for(let j=0;j<FA_SPB;j++){
+      const v=pcm[start+j],a=omega*j;
+      iv+=v*Math.cos(a);qv+=v*Math.sin(a);
+    }
+    const energy=iv*iv+qv*qv;
+    if(energy>bestEnergy){bestEnergy=energy;best=k;}
+  }
+  return best;
+}
+
+function faBytesFromPcm(pcm,start,byteCount){
+  const out=new Uint8Array(byteCount);
+  let symbolPos=start;
+  for(let i=0;i<byteCount;i++){
+    let value=0;
+    for(let j=0;j<4;j++){
+      const sym=faReadSymbol(pcm,symbolPos);
+      if(sym<0)throw new Error('Аудиопоток оборван');
+      value=(value<<2)|sym;
+      symbolPos+=FA_SPB;
+    }
+    out[i]=value;
+  }
+  return out;
+}
+
+function faFindSignalStart(pcm,from){
+  const threshold=0.006,window=FA_SPB*2;
+  for(let i=Math.max(0,from);i+window<pcm.length;i+=4){
+    let peak=0,sum=0;
+    for(let j=0;j<window;j++){
+      const v=Math.abs(pcm[i+j]);
+      if(v>peak)peak=v;
+      sum+=v*v;
+    }
+    if(peak>threshold&&Math.sqrt(sum/window)>threshold*0.35)return i;
+  }
+  return -1;
+}
+
+function faLocateFrame(pcm,onset){
+  let bestStart=-1,bestErrors=999,bestSyncErrors=999;
+  const expected=new Uint8Array(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length);
+  expected.set(FA_PREAMBLE,0);
+  expected.set(FA_SYNC_SYMBOLS,FA_PREAMBLE.length);
+  const from=Math.max(0,onset-FA_SPB*2);
+  const to=Math.min(pcm.length-expected.length*FA_SPB,onset+FA_SPB);
+  for(let start=from;start<=to;start++){
+    let errors=0,syncErrors=0;
+    for(let i=0;i<expected.length;i++){
+      if(faReadSymbol(pcm,start+i*FA_SPB)!==expected[i]){
+        errors++;
+        if(i>=FA_PREAMBLE.length)syncErrors++;
+      }
+      if(errors>10||syncErrors>3)break;
+    }
+    if(errors<bestErrors){
+      bestErrors=errors;bestSyncErrors=syncErrors;bestStart=start;
+      if(errors===0)break;
+    }
+  }
+  return bestErrors<=10&&bestSyncErrors<=3?{start:bestStart,errors:bestErrors}:null;
+}
+
+function faResample(input,sourceRate,targetRate){
+  if(sourceRate===targetRate)return input instanceof Float32Array?input:new Float32Array(input);
+  const length=Math.max(1,Math.floor(input.length*targetRate/sourceRate));
+  const out=new Float32Array(length),ratio=sourceRate/targetRate;
+  for(let i=0;i<length;i++){
+    const x=i*ratio,j=Math.floor(x),f=x-j;
+    const a=input[Math.min(j,input.length-1)]||0;
+    const b=input[Math.min(j+1,input.length-1)]||0;
+    out[i]=a+(b-a)*f;
+  }
+  return out;
+}
+
+function faFindNextSilenceEnd(pcm,from){
+  const window=32,needed=Math.round(FA_SR*0.035);
+  let quiet=0;
+  for(let i=Math.max(0,from);i+window<pcm.length;i+=window){
+    let peak=0;
+    for(let j=0;j<window;j++)peak=Math.max(peak,Math.abs(pcm[i+j]));
+    if(peak<0.004){
+      quiet+=window;
+      if(quiet>=needed)return i+window;
+    }else quiet=0;
+  }
+  return -1;
+}
+
+let faLastReceivedUrl=null;
+
+function faRenderReceivedFile(meta,raw,stats){
+  const blob=new Blob([raw],{type:meta.type||'application/octet-stream'});
+  const url=URL.createObjectURL(blob);
+  if(faLastReceivedUrl)URL.revokeObjectURL(faLastReceivedUrl);
+  faLastReceivedUrl=url;
+  $('#fileAudioRxResult').classList.remove('hidden');
+  $('#fileAudioRxImage').classList.add('hidden');
+  $('#fileAudioRxText').classList.add('hidden');
+  $('#fileAudioRxInfo').innerHTML='';
+  const add=(k,v)=>{
+    const d=document.createElement('div');
+    const a=document.createElement('span');a.textContent=k;
+    const b=document.createElement('span');b.textContent=v;
+    d.append(a,b);$('#fileAudioRxInfo').appendChild(d);
+  };
+  add('Файл',meta.name||'received.bin');
+  add('Размер',raw.length.toLocaleString()+' Б');
+  add('Пакеты',String(stats.received)+' / '+String(meta.totalFrames));
+  add('CRC32','✓ OK');
+  $('#fileAudioRxDownload').href=url;
+  $('#fileAudioRxDownload').download=meta.name||'received.bin';
+  $('#fileAudioRxDownload').textContent='Скачать '+(meta.name||'файл');
+  const name=(meta.name||'').toLowerCase();
+  if((meta.type||'').startsWith('image/')||/\.(png|jpe?g|gif|bmp|webp|svg|ico|tiff?)$/.test(name)){
+    $('#fileAudioRxImage').src=url;
+    $('#fileAudioRxImage').classList.remove('hidden');
+  }else if((meta.type||'').startsWith('text/')||/\.(txt|md|json|csv|xml|html|css|js|py)$/.test(name)){
+    $('#fileAudioRxText').value=new TextDecoder().decode(raw);
+    $('#fileAudioRxText').classList.remove('hidden');
+  }
+}
+
+function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
+  const pcm=faResample(sourcePcm,sourceRate,FA_SR);
+  let cursor=0,meta=null,received=new Map(),valid=0,crcErrors=0,skipped=0,guard=0;
+  while(cursor+FA_SPB*100<pcm.length&&guard++<20000){
+    const onset=faFindSignalStart(pcm,cursor);
+    if(onset<0)break;
+    const located=faLocateFrame(pcm,onset);
+    if(!located){
+      skipped++;
+      const next=faFindNextSilenceEnd(pcm,onset+FA_SPB*20);
+      if(next<0)break;
+      cursor=next;
+      continue;
+    }
+    const frameStart=located.start+FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length;
+    let header;
+    try{header=faBytesFromPcm(pcm,frameStart,16);}
+    catch(e){skipped++;cursor=onset+FA_SPB*64;continue;}
+    const hdv=new DataView(header.buffer,header.byteOffset,header.byteLength);
+    const magic=header[0]===0x43&&header[1]===0x32&&header[2]===0x41&&header[3]===0x46;
+    const version=header[4],type=header[5],sequence=hdv.getUint32(6,true);
+    const total=hdv.getUint32(10,true),payloadLen=hdv.getUint16(14,true);
+    if(!magic||version!==1||(type!==0&&type!==1)||payloadLen>1024||total>1000){
+      skipped++;
+      const next=faFindNextSilenceEnd(pcm,onset+FA_SPB*64);
+      if(next<0)break;
+      cursor=next;
+      continue;
+    }
+    const fullLength=20+payloadLen;
+    const allSymbols=FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length+fullLength*4;
+    const end=located.start+allSymbols*FA_SPB;
+    if(end>pcm.length)break;
+    let packet;
+    try{packet=faBytesFromPcm(pcm,frameStart,fullLength);}
+    catch(e){break;}
+    const packetDv=new DataView(packet.buffer,packet.byteOffset,packet.byteLength);
+    const receivedCrc=packetDv.getUint32(16+payloadLen,true);
+    const calculatedCrc=crc32(packet.subarray(0,16+payloadLen));
+    if(receivedCrc!==calculatedCrc){
+      crcErrors++;
+    }else{
+      const payload=packet.subarray(16,16+payloadLen);
+      if(type===0){
+        try{
+          const candidate=JSON.parse(new TextDecoder().decode(payload));
+          if(!Number.isInteger(candidate.size)||candidate.size<0||candidate.size>FA_MAX_FILE_SIZE||
+             !Number.isInteger(candidate.totalFrames)||candidate.totalFrames<1||candidate.totalFrames>1000||
+             !Number.isInteger(candidate.chunkSize)||candidate.chunkSize<1||candidate.chunkSize>1024){
+            throw new Error('Некорректные метаданные');
+          }
+          meta=candidate;
+          received=new Map();
+        }catch(e){console.warn('C2A audio metadata:',e);}
+      }else if(meta&&sequence<meta.totalFrames&&total===meta.totalFrames&&payload.length<=meta.chunkSize){
+        received.set(sequence,new Uint8Array(payload));
+      }
+      valid++;
+    }
+    if(onProgress)onProgress({valid,crcErrors,skipped,received:received.size,total:meta?meta.totalFrames:0});
+    cursor=end+Math.round(FA_GAP_SAMPLES*0.35);
+  }
+  if(!meta)throw new Error('Не найден заголовок файла. Начните воспроизведение с самого начала записи.');
+  if(received.size!==meta.totalFrames){
+    return {complete:false,meta,received:received.size,crcErrors,skipped,total:meta.totalFrames};
+  }
+  const raw=new Uint8Array(meta.size);
+  for(let i=0;i<meta.totalFrames;i++){
+    const chunk=received.get(i);
+    if(!chunk)throw new Error('Отсутствует пакет '+(i+1));
+    const offset=i*meta.chunkSize;
+    if(offset+chunk.length>raw.length)throw new Error('Размер пакета выходит за границы файла');
+    raw.set(chunk,offset);
+  }
+  if(crc32(raw)!==(meta.fileCrc32>>>0))throw new Error('CRC32 всего файла не совпал. Передача повреждена.');
+  return {complete:true,meta,raw,received:received.size,crcErrors,skipped,total:meta.totalFrames};
+}
+
+async function faFinishReceive(pcm,sr){
+  $('#fileAudioRxProgress').style.width='0%';
+  $('#fileAudioRxResult').classList.add('hidden');
+  $('#fileAudioRxStatus').textContent='Синхронизация и сборка пакетов...';
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const result=faDecodeFileStream(pcm,sr,stats=>{
+    const pct=stats.total?stats.received/stats.total*100:0;
+    $('#fileAudioRxProgress').style.width=Math.min(99,pct).toFixed(1)+'%';
+    $('#fileAudioRxStatus').textContent='Пакетов: '+stats.received+(stats.total?' / '+stats.total:'')+' · CRC ошибок: '+stats.crcErrors;
+  });
+  if(result.complete){
+    faRenderReceivedFile(result.meta,result.raw,result);
+    $('#fileAudioRxProgress').style.width='100%';
+    $('#fileAudioRxStatus').textContent='Файл восстановлен · '+result.received+' пакетов · CRC32 OK';
+    showMsg($('#msgFileAudioRx'),'Передача завершена. Исходные байты восстановлены без изменений.','ok');
+  }else{
+    $('#fileAudioRxStatus').textContent='Получено '+result.received+' из '+result.total+' пакетов';
+    showMsg($('#msgFileAudioRx'),'Не все пакеты получены. Повторите приём с начала передачи.','warn');
+  }
+}
+
+bindDrop($('#dropFileAudio'),$('#fileAudioUpload'),async file=>{
+  hideMsg($('#msgFileAudioRx'));
+  $('#fileAudioRxResult').classList.add('hidden');
+  $('#fileAudioRxStatus').textContent='Загрузка аудио...';
+  try{
+    const ab=await file.arrayBuffer();
+    let pcm,sr;
+    try{
+      const parsed=wavBytesToPcm(new Uint8Array(ab));
+      pcm=parsed.pcm;sr=parsed.sr;
+    }catch(parseError){
+      const decoded=await getAudioCtx().decodeAudioData(ab.slice(0));
+      pcm=bufferToMono(decoded);sr=decoded.sampleRate;
+    }
+    await faFinishReceive(pcm,sr);
+  }catch(e){
+    console.error(e);
+    $('#fileAudioRxStatus').textContent='';
+    showMsg($('#msgFileAudioRx'),'Ошибка приёма: '+(e.message||e),'err');
+  }
+});
+
+const faMicState={
+  stream:null,ctx:null,source:null,processor:null,silent:null,
+  chunks:[],samples:0,active:false,phase:1,last:0,ratio:1
+};
+
+function faResampleMicChunk(input,sourceRate){
+  if(sourceRate===FA_SR)return new Float32Array(input);
+  const ratio=sourceRate/FA_SR;
+  if(!faMicState.ratio||faMicState.ratio!==ratio){
+    faMicState.phase=1;faMicState.last=input[0]||0;faMicState.ratio=ratio;
+  }
+  const combined=new Float32Array(input.length+1);
+  combined[0]=faMicState.last;
+  combined.set(input,1);
+  const out=new Float32Array(Math.ceil(input.length/ratio)+3);
+  let n=0,pos=faMicState.phase;
+  while(pos<input.length){
+    const idx=Math.floor(pos),frac=pos-idx;
+    const a=combined[idx]||0,b=combined[idx+1]||0;
+    out[n++]=a+(b-a)*frac;
+    pos+=ratio;
+  }
+  faMicState.phase=pos-input.length;
+  faMicState.last=input[input.length-1]||0;
+  return out.slice(0,n);
+}
+
+async function faStopMicrophone(){
+  if(!faMicState.active)return;
+  faMicState.active=false;
+  $('#btnFileMicStart').disabled=false;
+  $('#btnFileMicStop').disabled=true;
+  $('#fileAudioRxStatus').textContent='Остановка микрофона и сборка записи...';
+  try{
+    if(faMicState.processor)faMicState.processor.disconnect();
+    if(faMicState.source)faMicState.source.disconnect();
+    if(faMicState.silent)faMicState.silent.disconnect();
+    if(faMicState.stream)faMicState.stream.getTracks().forEach(t=>t.stop());
+  }catch(e){}
+  const pcm=new Float32Array(faMicState.samples);
+  let offset=0;
+  for(const part of faMicState.chunks){pcm.set(part,offset);offset+=part.length;}
+  faMicState.chunks=[];faMicState.samples=0;
+  try{await faFinishReceive(pcm,FA_SR);}
+  catch(e){
+    console.error(e);
+    $('#fileAudioRxStatus').textContent='';
+    showMsg($('#msgFileAudioRx'),'Ошибка приёма: '+(e.message||e),'err');
+  }
+}
+
+$('#btnFileMicStart').onclick=async ()=>{
+  hideMsg($('#msgFileAudioRx'));
+  $('#fileAudioRxResult').classList.add('hidden');
+  $('#fileAudioRxProgress').style.width='0%';
+  faMicState.chunks=[];faMicState.samples=0;faMicState.phase=1;faMicState.ratio=1;
+  $('#fileMicDuration').textContent='0.0 с';
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1
+    }});
+    faMicState.stream=stream;
+    const ctx=getAudioCtx();
+    if(ctx.state==='suspended')await ctx.resume();
+    const source=ctx.createMediaStreamSource(stream);
+    const processor=ctx.createScriptProcessor(4096,1,1);
+    const silent=ctx.createGain();silent.gain.value=0;
+    faMicState.ctx=ctx;faMicState.source=source;faMicState.processor=processor;faMicState.silent=silent;
+    faMicState.active=true;
+    processor.onaudioprocess=e=>{
+      if(!faMicState.active)return;
+      const input=e.inputBuffer.getChannelData(0);
+      const copy=faResampleMicChunk(input,ctx.sampleRate);
+      faMicState.chunks.push(copy);
+      faMicState.samples+=copy.length;
+      let peak=0;
+      for(let i=0;i<input.length;i++)peak=Math.max(peak,Math.abs(input[i]));
+      $('#fileMicLevel').style.width=Math.min(100,peak*180)+'%';
+      $('#fileMicLevelTxt').textContent=Math.min(100,Math.round(peak*180))+'%';
+      $('#fileMicDuration').textContent=(faMicState.samples/FA_SR).toFixed(1)+' с';
+      $('#fileAudioRxStatus').textContent='Приём... '+(faMicState.samples/FA_SR).toFixed(1)+' с. После окончания передачи нажмите «Остановить и собрать файл».';
+      if(faMicState.samples>FA_SR*600)faStopMicrophone();
+    };
+    source.connect(processor);processor.connect(silent);silent.connect(ctx.destination);
+    $('#btnFileMicStart').disabled=true;
+    $('#btnFileMicStop').disabled=false;
+    showMsg($('#msgFileAudioRx'),'Микрофон активен. Начните воспроизведение WAV с самого начала.','ok');
+  }catch(e){
+    try{if(faMicState.stream)faMicState.stream.getTracks().forEach(t=>t.stop());}catch(_){}
+    faMicState.active=false;
+    $('#btnFileMicStart').disabled=false;
+    $('#btnFileMicStop').disabled=true;
+    showMsg($('#msgFileAudioRx'),'Не удалось открыть микрофон: '+(e.message||e),'err');
+  }
+};
+
+$('#btnFileMicStop').onclick=faStopMicrophone;
+
 </script>
 </body>
 </html>
