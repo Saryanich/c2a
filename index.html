@@ -1791,6 +1791,37 @@ function faReadSymbol(pcm,start){
   return faSymbolInfo(pcm,start).symbol;
 }
 
+function faDecodeSymbolsAdaptive(pcm,start,count,previousStart){
+  const symbols=new Uint8Array(count);
+  let last=previousStart;
+  for(let i=0;i<count;i++){
+    const predicted=last===null?start:last+FA_SPB;
+    let bestStart=predicted,bestSymbol=-1,bestScore=-Infinity;
+    for(let delta=-1;delta<=1;delta++){
+      const candidate=predicted+delta;
+      const info=faSymbolInfo(pcm,candidate);
+      const score=info.confidence-Math.abs(delta)*0.002;
+      if(info.symbol>=0&&score>bestScore){
+        bestScore=score;bestStart=candidate;bestSymbol=info.symbol;
+      }
+    }
+    if(bestSymbol<0)throw new Error('Аудиопоток оборван');
+    symbols[i]=bestSymbol;
+    last=bestStart;
+  }
+  return {symbols,lastStart:last};
+}
+
+function faSymbolsToBytes(symbols){
+  if(symbols.length%4)throw new Error('Неполный байт аудиоданных');
+  const out=new Uint8Array(symbols.length/4);
+  for(let i=0;i<out.length;i++){
+    const p=i*4;
+    out[i]=(symbols[p]<<6)|(symbols[p+1]<<4)|(symbols[p+2]<<2)|symbols[p+3];
+  }
+  return out;
+}
+
 function faBytesFromPcm(pcm,start,byteCount){
   const out=new Uint8Array(byteCount);
   let symbolPos=start;
@@ -1808,7 +1839,7 @@ function faBytesFromPcm(pcm,start,byteCount){
 }
 
 function faFindSignalStart(pcm,from){
-  const threshold=0.006,window=FA_SPB*2;
+  const threshold=0.02,rmsThreshold=0.012,window=FA_SPB*2;
   for(let i=Math.max(0,from);i+window<pcm.length;i+=4){
     let peak=0,sum=0;
     for(let j=0;j<window;j++){
@@ -1816,7 +1847,7 @@ function faFindSignalStart(pcm,from){
       if(v>peak)peak=v;
       sum+=v*v;
     }
-    if(peak>threshold&&Math.sqrt(sum/window)>threshold*0.35){
+    if(peak>threshold&&Math.sqrt(sum/window)>rmsThreshold){
       for(let j=0;j<window;j++)if(Math.abs(pcm[i+j])>threshold)return i+j;
     }
   }
@@ -1869,7 +1900,7 @@ function faFindNextSilenceEnd(pcm,from){
   for(let i=Math.max(0,from);i+window<pcm.length;i+=window){
     let peak=0;
     for(let j=0;j<window;j++)peak=Math.max(peak,Math.abs(pcm[i+j]));
-    if(peak<0.004){
+    if(peak<0.012){
       quiet+=window;
       if(quiet>=needed)return i+window;
     }else quiet=0;
@@ -1926,9 +1957,12 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
       continue;
     }
     const frameStart=located.start+FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length;
-    let header;
-    try{header=faBytesFromPcm(pcm,frameStart,16);}
-    catch(e){skipped++;cursor=onset+FA_SPB*64;continue;}
+    let headerSymbols,headerDecoded,header;
+    try{
+      headerDecoded=faDecodeSymbolsAdaptive(pcm,frameStart,16*4,null);
+      headerSymbols=headerDecoded.symbols;
+      header=faSymbolsToBytes(headerSymbols);
+    }catch(e){skipped++;cursor=onset+FA_SPB*64;continue;}
     const hdv=new DataView(header.buffer,header.byteOffset,header.byteLength);
     const magic=header[0]===0x43&&header[1]===0x32&&header[2]===0x41&&header[3]===0x46;
     const version=header[4],type=header[5],sequence=hdv.getUint32(6,true);
@@ -1940,13 +1974,19 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
       cursor=next;
       continue;
     }
-    const fullLength=20+payloadLen;
-    const allSymbols=FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length+fullLength*4;
-    const end=located.start+allSymbols*FA_SPB;
+    const restCount=(payloadLen+4)*4;
+    let restDecoded,packet;
+    try{
+      restDecoded=faDecodeSymbolsAdaptive(pcm,headerDecoded.lastStart+FA_SPB,restCount,headerDecoded.lastStart);
+      const packetSymbols=new Uint8Array(headerSymbols.length+restDecoded.symbols.length);
+      packetSymbols.set(headerSymbols,0);
+      packetSymbols.set(restDecoded.symbols,headerSymbols.length);
+      packet=faSymbolsToBytes(packetSymbols);
+    }catch(e){break;}
+    const bodySymbolCount=headerSymbols.length+restCount;
+    const measuredStep=bodySymbolCount>1?(restDecoded.lastStart-frameStart)/(bodySymbolCount-1):FA_SPB;
+    const end=restDecoded.lastStart+FA_SPB;
     if(end>pcm.length)break;
-    let packet;
-    try{packet=faBytesFromPcm(pcm,frameStart,fullLength);}
-    catch(e){break;}
     const packetDv=new DataView(packet.buffer,packet.byteOffset,packet.byteLength);
     const receivedCrc=packetDv.getUint32(16+payloadLen,true);
     const calculatedCrc=crc32(packet.subarray(0,16+payloadLen));
@@ -1971,7 +2011,7 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
       valid++;
     }
     if(onProgress)onProgress({valid,crcErrors,skipped,received:received.size,total:meta?meta.totalFrames:0});
-    cursor=end+Math.round(FA_GAP_SAMPLES*0.35);
+    cursor=end+Math.round(FA_GAP_SAMPLES*0.35*(measuredStep/FA_SPB));
   }
   if(!meta)throw new Error('Не найден заголовок файла. Начните воспроизведение с самого начала записи.');
   if(received.size!==meta.totalFrames){
