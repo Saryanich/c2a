@@ -101,7 +101,7 @@
         Перетащите файл сюда или нажмите, чтобы выбрать<br>
         <span class="muted">Аудио · Видео · MP3 · WAV · FLAC · AAC · M4A · OGG · MP4 · MOV · WebM</span>
       </div>
-      <input id="fileEnc" type="file" class="hidden" accept="*/*">
+      <input id="fileEnc" type="file" class="hidden" accept="audio/*,image/*,text/plain,.txt,.md,.json,.csv,.xml,.html,.css,.js,.py,.wav,.mp3,.flac,.aac,.m4a,.ogg,.opus,.aiff,.caf,.jpg,.jpeg,.png,.gif,.bmp,.webp,.heic,.heif,.tif,.tiff,.ico,.svg">
       <div id="msgEnc" class="msg"></div>
 
       <div id="encInfo" class="hidden" style="margin-top:14px">
@@ -155,7 +155,7 @@
     <div class="panel">
       <h2>File → Audio</h2>
       <div id="dropFileAudio" class="drop">Перетащите файл сюда или нажмите для выбора<br><span class="muted">Фото · Текст · Другие файлы · до 256 КБ</span></div>
-      <input id="fileAudioInput" type="file" class="hidden" accept="*/*">
+      <input id="fileAudioInput" type="file" class="hidden" accept="image/*,text/plain,.txt,.md,.json,.csv,.xml,.html,.css,.js,.py,.jpg,.jpeg,.png,.gif,.bmp,.webp,.heic,.heif,.tif,.tiff,.ico,.svg">
       <div id="fileAudioSelected" class="status"></div>
       <div class="row" style="margin-top:12px">
         <button class="primary" id="btnFileToAudio" disabled>Создать WAV для передачи</button>
@@ -771,10 +771,18 @@ function bindDrop(dropEl, inputEl, handler){
 
 const AUDIO_EXT = ['mp3','wav','flac','aac','m4a','ogg','oga','opus','weba','aiff','aif','caf'];
 const VIDEO_EXT = ['mp4','mov','webm','m4v','mkv','avi','ogv'];
-const IMG_EXT = ['jpg','jpeg','png','gif','bmp','webp','heic','heif','svg','tiff','ico'];
+const IMG_EXT = ['jpg','jpeg','png','gif','bmp','webp','heic','heif','svg','tif','tiff','ico'];
+const TEXT_EXT = ['txt','md','json','csv','xml','html','css','js','py'];
+function isImageFile(file){return file.type.startsWith('image/')||IMG_EXT.includes(fileExt(file.name));}
+function isTextFile(file){return file.type.startsWith('text/')||['application/json','application/xml'].includes(file.type)||TEXT_EXT.includes(fileExt(file.name));}
+function isAudioFile(file){return file.type.startsWith('audio/')||AUDIO_EXT.includes(fileExt(file.name));}
 function fileExt(name){ const i = name.lastIndexOf('.'); return i>=0 ? name.slice(i+1).toLowerCase() : ''; }
 
 bindDrop($('#dropFileAudio'), $('#fileAudioInput'), file=>{
+  if(!isImageFile(file)&&!isTextFile(file)){
+    state.fileAudioFile=null;$('#btnFileToAudio').disabled=true;
+    showMsg($('#msgFileAudioEncode'),'Для File → Audio подходят только изображения и текстовые файлы.','err');return;
+  }
   state.fileAudioFile=file;
   $('#btnFileToAudio').disabled=!file;
   $('#btnDlFileAudio').disabled=true;
@@ -791,7 +799,11 @@ bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
   hideMsg($('#msgEnc')); hideMsg($('#msgEnc2')); $('#encResult').classList.add('hidden');
   state.genericFile=null;$('#btnFileToAudio').disabled=true;
   const ext=fileExt(file.name);
-  if(!file.type.startsWith('audio/')&&!file.type.startsWith('video/')&&!AUDIO_EXT.includes(ext)&&!VIDEO_EXT.includes(ext)){
+  if(!isAudioFile(file)&&!isImageFile(file)&&!isTextFile(file)){
+    showMsg($('#msgEnc'),'Для File → Code подходят только аудио, изображения и текстовые файлы.','err');
+    $('#btnEncode').disabled=true;return;
+  }
+  if(!isAudioFile(file)){
     state.genericFile=file; state.encFileInfo={name:file.name,type:'файл'}; state.encOriginalFileSize=file.size;
     $('#btnDlFileAudio').disabled=true;faEncodedWav=null;$('#fileAudioPreview').classList.add('hidden');
     const kv=$('#encInfoKv'); kv.innerHTML='';
@@ -802,7 +814,7 @@ bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
     $('#encInfo').classList.remove('hidden');$('#encAudio').classList.add('hidden');
     document.querySelector('.wavebox').classList.add('hidden');
     $('#trimStart').parentElement.parentElement.classList.add('hidden');$('#trimDur').parentElement.classList.add('hidden');
-    $('#btnEncode').disabled=false;$('#btnPlaySel').disabled=true;$('#btnFileToAudio').disabled=false;
+    $('#btnEncode').disabled=false;$('#btnPlaySel').disabled=true;
     showMsg($('#msgEnc'),'Файл загружен. Исходные байты будут сохранены без изменений.','ok');return;
   }
   $('#encAudio').classList.remove('hidden');document.querySelector('.wavebox').classList.remove('hidden');
@@ -1987,18 +1999,24 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
       cursor=next;
       continue;
     }
-    const frameStart=located.start+FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length;
-    let headerSymbols,headerDecoded,header;
-    try{
-      headerDecoded=faDecodeSymbolsAdaptive(pcm,frameStart,16*4,null);
-      headerSymbols=headerDecoded.symbols;
-      header=faSymbolsToBytes(headerSymbols);
-    }catch(e){skipped++;cursor=onset+FA_SPB*64;continue;}
-    const hdv=new DataView(header.buffer,header.byteOffset,header.byteLength);
-    const magic=header[0]===0x43&&header[1]===0x32&&header[2]===0x41&&header[3]===0x46;
-    const version=header[4],type=header[5],sequence=hdv.getUint32(6,true);
-    const total=hdv.getUint32(10,true),payloadLen=hdv.getUint16(14,true);
-    if(!magic||version!==1||(type!==0&&type!==1)||payloadLen>1024||total>1000){
+    let frameStart=-1,headerSymbols=null,headerDecoded=null,header=null,sequence=0,total=0,payloadLen=0,type=-1;
+    // Acoustic playback and resampling can shift the first detected sample.
+    // Try nearby symbol boundaries and accept only a structurally valid C2AF header.
+    for(let shift=-FA_SPB;shift<=FA_SPB;shift++){
+      const candidateStart=located.start+shift+FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length;
+      try{
+        const decoded=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
+        const bytes=faSymbolsToBytes(decoded.symbols);
+        const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+        const magic=bytes[0]===0x43&&bytes[1]===0x32&&bytes[2]===0x41&&bytes[3]===0x46;
+        const candidateType=bytes[5],candidateTotal=dv.getUint32(10,true),candidateLen=dv.getUint16(14,true);
+        if(magic&&bytes[4]===1&&(candidateType===0||candidateType===1)&&candidateLen<=1024&&candidateTotal>0&&candidateTotal<=1000){
+          frameStart=candidateStart;headerSymbols=decoded.symbols;headerDecoded=decoded;header=bytes;
+          type=candidateType;sequence=dv.getUint32(6,true);total=candidateTotal;payloadLen=candidateLen;break;
+        }
+      }catch(e){}
+    }
+    if(frameStart<0){
       skipped++;
       const next=faFindNextSilenceEnd(pcm,onset+FA_SPB*64);
       if(next<0)break;
