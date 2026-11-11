@@ -1898,34 +1898,32 @@ function faFindSignalStart(pcm,from){
 }
 
 function faLocateFrame(pcm,onset){
+  let bestStart=-1,bestErrors=999,bestSyncErrors=999,bestScore=-1;
   const expected=new Uint8Array(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length);
   expected.set(FA_PREAMBLE,0);
   expected.set(FA_SYNC_SYMBOLS,FA_PREAMBLE.length);
-  let best=null;
-  // The first detected loud sample is not necessarily the beginning of a symbol.
-  // Search a wider phase window and let the adaptive decoder track clock drift.
+  // Locate the preamble using fixed symbol windows. Adaptive timing is applied
+  // only after the exact preamble/sync sequence has been identified.
   const from=Math.max(0,onset-FA_SPB*2);
   const to=Math.min(pcm.length-expected.length*FA_SPB,onset+FA_SPB*2);
   for(let start=from;start<=to;start++){
-    let decoded;
-    try{decoded=faDecodeSymbolsAdaptive(pcm,start,expected.length,null);}
-    catch(e){continue;}
-    let errors=0,syncErrors=0,confidence=0;
+    let errors=0,syncErrors=0,score=0;
     for(let i=0;i<expected.length;i++){
-      if(decoded.symbols[i]!==expected[i]){
+      const info=faSymbolInfo(pcm,start+i*FA_SPB);
+      if(info.symbol!==expected[i]){
         errors++;
         if(i>=FA_PREAMBLE.length)syncErrors++;
       }
-      confidence+=faSymbolInfo(pcm,decoded.lastStart-(expected.length-1-i)*FA_SPB).confidence;
-      if(errors>12||syncErrors>4)break;
+      score+=info.confidence;
+      if(errors>10||syncErrors>3)break;
     }
-    if(!best||errors<best.errors||
-       (errors===best.errors&&syncErrors<best.syncErrors)||
-       (errors===best.errors&&syncErrors===best.syncErrors&&confidence>best.confidence)){
-      best={start,errors,syncErrors,confidence};
+    if(errors<bestErrors||
+       (errors===bestErrors&&syncErrors<bestSyncErrors)||
+       (errors===bestErrors&&syncErrors===bestSyncErrors&&score>bestScore)){
+      bestErrors=errors;bestSyncErrors=syncErrors;bestScore=score;bestStart=start;
     }
   }
-  return best&&best.errors<=12&&best.syncErrors<=4?best:null;
+  return bestErrors<=10&&bestSyncErrors<=3?{start:bestStart,errors:bestErrors,confidence:bestScore}:null;
 }
 
 function faResample(input,sourceRate,targetRate){
@@ -2009,14 +2007,17 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
     for(let shift=-FA_SPB*2;shift<=FA_SPB*2;shift++){
       const candidateStart=located.start+shift+FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length;
       try{
-        const decoded=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
-        const bytes=faSymbolsToBytes(decoded.symbols);
+        // First test the header with fixed symbol boundaries; this avoids the
+        // adaptive clock tracker drifting while the short header is inspected.
+        const bytes=faBytesFromPcm(pcm,candidateStart,16);
         const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
         const magic=bytes[0]===0x43&&bytes[1]===0x32&&bytes[2]===0x41&&bytes[3]===0x46;
         const candidateType=bytes[5],candidateTotal=dv.getUint32(10,true),candidateLen=dv.getUint16(14,true);
-        if(magic&&bytes[4]===1&&(candidateType===0||candidateType===1)&&candidateLen<=1024&&candidateTotal>0&&candidateTotal<=1000){
+        const candidateSequence=dv.getUint32(6,true);
+        if(magic&&bytes[4]===1&&(candidateType===0||candidateType===1)&&candidateLen<=1024&&candidateTotal>0&&candidateTotal<=1000&&candidateSequence<candidateTotal){
+          const decoded=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
           frameStart=candidateStart;headerSymbols=decoded.symbols;headerDecoded=decoded;header=bytes;
-          type=candidateType;sequence=dv.getUint32(6,true);total=candidateTotal;payloadLen=candidateLen;break;
+          type=candidateType;sequence=candidateSequence;total=candidateTotal;payloadLen=candidateLen;break;
         }
       }catch(e){}
     }
@@ -2066,7 +2067,7 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
     if(onProgress)onProgress({valid,crcErrors,skipped,received:received.size,total:meta?meta.totalFrames:0});
     cursor=end+Math.round(FA_GAP_SAMPLES*0.35*(measuredStep/FA_SPB));
   }
-  if(!meta)throw new Error('Не найден заголовок файла. Начните воспроизведение с самого начала записи.');
+  if(!meta)throw new Error('В загруженном WAV не удалось обнаружить корректный C2A-заголовок. Проверьте, что выбран полный WAV, созданный режимом «File → Audio», а не обычное аудио.');
   if(received.size!==meta.totalFrames){
     return {complete:false,meta,received:received.size,crcErrors,skipped,total:meta.totalFrames};
   }
