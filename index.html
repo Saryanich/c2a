@@ -198,11 +198,13 @@
         </div>
       </div>
     </div>
+  </section>
+
   <section id="tab-audiodec" class="tabpane hidden">
     <div class="panel" id="fileAudioReceiver">
     <h2>Audio → Файл</h2>
     <div class="muted">Восстановление файла из WAV или напрямую через микрофон. Блоки собираются автоматически, целостность проверяется по CRC32.</div>
-    <div id="dropFileAudio" class="drop" style="margin-top:12px">Перетащите WAV сюда или нажмите для выбора</div>
+    <div id="dropFileAudioRx" class="drop" style="margin-top:12px">Перетащите WAV сюда или нажмите для выбора</div>
     <input id="fileAudioUpload" type="file" class="hidden" accept=".wav,audio/wav,audio/*">
     <div class="row" style="margin-top:12px">
       <button class="primary" id="btnFileMicStart">Принимать через микрофон</button>
@@ -2079,7 +2081,7 @@ async function faFinishReceive(pcm,sr){
   }
 }
 
-bindDrop($('#dropFileAudio'),$('#fileAudioUpload'),async file=>{
+bindDrop($('#dropFileAudioRx'),$('#fileAudioUpload'),async file=>{
   hideMsg($('#msgFileAudioRx'));
   $('#fileAudioRxResult').classList.add('hidden');
   $('#fileAudioRxStatus').textContent='Загрузка аудио...';
