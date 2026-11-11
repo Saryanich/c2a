@@ -2028,23 +2028,37 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
       cursor=next;
       continue;
     }
-    const restCount=(payloadLen+4)*4;
-    let restDecoded,packet;
-    try{
-      restDecoded=faDecodeSymbolsAdaptive(pcm,headerDecoded.lastStart+FA_SPB,restCount,headerDecoded.lastStart);
-      const packetSymbols=new Uint8Array(headerSymbols.length+restDecoded.symbols.length);
-      packetSymbols.set(headerSymbols,0);
-      packetSymbols.set(restDecoded.symbols,headerSymbols.length);
-      packet=faSymbolsToBytes(packetSymbols);
-    }catch(e){break;}
-    const bodySymbolCount=headerSymbols.length+restCount;
-    const measuredStep=bodySymbolCount>1?(restDecoded.lastStart-frameStart)/(bodySymbolCount-1):FA_SPB;
-    const end=restDecoded.lastStart+FA_SPB;
+    // A generated WAV has an exact sample clock. Decode its complete packet
+    // with fixed symbol spacing first; adaptive tracking can drift on clean WAVs.
+    let packet=null;
+    const packetLength=16+payloadLen+4;
+    try{packet=faBytesFromPcm(pcm,frameStart,packetLength);}catch(e){}
+    let packetDv=null;
+    let receivedCrc=0,calculatedCrc=0;
+    if(packet){
+      packetDv=new DataView(packet.buffer,packet.byteOffset,packet.byteLength);
+      receivedCrc=packetDv.getUint32(16+payloadLen,true);
+      calculatedCrc=crc32(packet.subarray(0,16+payloadLen));
+    }
+    // Keep adaptive decoding as a fallback for microphone recordings with
+    // sample-clock drift, but never prefer it over a CRC-valid fixed decode.
+    if(!packet||receivedCrc!==calculatedCrc){
+      try{
+        const adaptive=faDecodeSymbolsAdaptive(pcm,frameStart+FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length,packetLength*4,null);
+        const adaptivePacket=faSymbolsToBytes(adaptive.symbols);
+        const adaptiveDv=new DataView(adaptivePacket.buffer,adaptivePacket.byteOffset,adaptivePacket.byteLength);
+        const adaptiveCrc=adaptiveDv.getUint32(16+payloadLen,true);
+        if(adaptiveCrc===crc32(adaptivePacket.subarray(0,16+payloadLen))){
+          packet=adaptivePacket;
+          packetDv=adaptiveDv;
+          receivedCrc=adaptiveCrc;
+          calculatedCrc=adaptiveCrc;
+        }
+      }catch(e){}
+    }
+    const end=frameStart+(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length+packetLength*4)*FA_SPB;
     if(end>pcm.length)break;
-    const packetDv=new DataView(packet.buffer,packet.byteOffset,packet.byteLength);
-    const receivedCrc=packetDv.getUint32(16+payloadLen,true);
-    const calculatedCrc=crc32(packet.subarray(0,16+payloadLen));
-    if(receivedCrc!==calculatedCrc){
+    if(!packet||receivedCrc!==calculatedCrc){
       crcErrors++;
     }else{
       const payload=packet.subarray(16,16+payloadLen);
@@ -2065,7 +2079,7 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
       valid++;
     }
     if(onProgress)onProgress({valid,crcErrors,skipped,received:received.size,total:meta?meta.totalFrames:0});
-    cursor=end+Math.round(FA_GAP_SAMPLES*0.35*(measuredStep/FA_SPB));
+    cursor=end+FA_GAP_SAMPLES;
   }
   if(!meta)throw new Error('В загруженном WAV не удалось обнаружить корректный C2A-заголовок. Проверьте, что выбран полный WAV, созданный режимом «File → Audio», а не обычное аудио.');
   if(received.size!==meta.totalFrames){
