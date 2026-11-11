@@ -81,14 +81,16 @@
 
 <header>
   <div class="logo">C2A</div>
-  <div class="sub">File to Code · File to Audio</div>
+  <div class="sub">Универсальное преобразование файлов · C2A</div>
 </header>
 
 <main>
 
   <div class="tabs">
-    <div class="tab active" data-tab="enc">File to Code</div>
-    <div class="tab" data-tab="dec">File to Audio</div>
+    <div class="tab active" data-tab="enc">File → Code</div>
+    <div class="tab" data-tab="fileaudio">File → Audio</div>
+    <div class="tab" data-tab="dec">Code → File</div>
+    <div class="tab" data-tab="audiodec">Audio → File</div>
   </div>
 
   <!-- AUDIO → CODE -->
@@ -145,9 +147,16 @@
       <div class="row" style="margin-top:12px"><button class="primary" id="btnTextToC2a">Сохранить текст в .c2a</button></div>
       <div id="msgTextC2a" class="msg"></div>
     </div>
+    
+  </section>
+
+  <!-- CODE → AUDIO -->
+  <section id="tab-fileaudio" class="tabpane hidden">
     <div class="panel">
-      <h2>Файл → Audio</h2>
-      <div class="muted">Побитовая передача фото, текста и других файлов через звуковой сигнал. Максимальный размер — 256 КБ.</div>
+      <h2>File → Audio</h2>
+      <div id="dropFileAudio" class="drop">Перетащите файл сюда или нажмите для выбора<br><span class="muted">Фото · Текст · Другие файлы · до 256 КБ</span></div>
+      <input id="fileAudioInput" type="file" class="hidden" accept="*/*">
+      <div id="fileAudioSelected" class="status"></div>
       <div class="row" style="margin-top:12px">
         <button class="primary" id="btnFileToAudio" disabled>Создать WAV для передачи</button>
         <button id="btnDlFileAudio" disabled>Скачать WAV</button>
@@ -159,7 +168,6 @@
     </div>
   </section>
 
-  <!-- CODE → AUDIO -->
   <section id="tab-dec" class="tabpane hidden">
     <div class="panel">
       <h2>Загрузка .c2a</h2>
@@ -190,7 +198,8 @@
         </div>
       </div>
     </div>
-<div class="panel" id="fileAudioReceiver">
+  <section id="tab-audiodec" class="tabpane hidden">
+    <div class="panel" id="fileAudioReceiver">
     <h2>Audio → Файл</h2>
     <div class="muted">Восстановление файла из WAV или напрямую через микрофон. Блоки собираются автоматически, целостность проверяется по CRC32.</div>
     <div id="dropFileAudio" class="drop" style="margin-top:12px">Перетащите WAV сюда или нажмите для выбора</div>
@@ -211,6 +220,10 @@
       <a id="fileAudioRxDownload" class="tab" style="display:inline-block;margin-top:12px" download>Скачать восстановленный файл</a>
     </div>
   </div>
+
+  </section>
+
+  <div class="hidden" aria-hidden="true">
 <div class="muted" style="margin:0 0 12px">Акустическая передача текста через WAV и микрофон.</div>
   <section id="tab-t2c" class="panel">
     <div class="panel">
@@ -267,6 +280,8 @@
 
 
   </section>
+
+  </div>
 
 </main>
 
@@ -344,6 +359,7 @@ const state = {
   encOriginalFileSize: 0,
   encC2aBytes: null,
   genericFile: null,
+  fileAudioFile: null,
   decGeneric: null,
   decC2aBytes: null,
   decWavBytes: null,
@@ -755,6 +771,19 @@ const AUDIO_EXT = ['mp3','wav','flac','aac','m4a','ogg','oga','opus','weba','aif
 const VIDEO_EXT = ['mp4','mov','webm','m4v','mkv','avi','ogv'];
 const IMG_EXT = ['jpg','jpeg','png','gif','bmp','webp','heic','heif','svg','tiff','ico'];
 function fileExt(name){ const i = name.lastIndexOf('.'); return i>=0 ? name.slice(i+1).toLowerCase() : ''; }
+
+bindDrop($('#dropFileAudio'), $('#fileAudioInput'), file=>{
+  state.fileAudioFile=file;
+  $('#btnFileToAudio').disabled=!file;
+  $('#btnDlFileAudio').disabled=true;
+  faEncodedWav=null;
+  if(faEncodedUrl){URL.revokeObjectURL(faEncodedUrl);faEncodedUrl=null;}
+  $('#fileAudioPreview').classList.add('hidden');
+  $('#fileAudioEncodeProgress').style.width='0%';
+  $('#fileAudioEncodeStatus').textContent='';
+  $('#fileAudioSelected').textContent=file.name+' · '+file.size.toLocaleString()+' Б';
+  showMsg($('#msgFileAudioEncode'),'Файл выбран. Готов к преобразованию в Audio.','ok');
+});
 
 bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
   hideMsg($('#msgEnc')); hideMsg($('#msgEnc2')); $('#encResult').classList.add('hidden');
@@ -1703,7 +1732,7 @@ let faEncodedWav=null;
 let faEncodedUrl=null;
 
 $('#btnFileToAudio').onclick=async ()=>{
-  const button=$('#btnFileToAudio'),file=state.genericFile;
+  const button=$('#btnFileToAudio'),file=state.fileAudioFile;
   if(!file)return;
   if(!file.size){
     showMsg($('#msgFileAudioEncode'),'Пустой файл передавать не нужно.','err');
@@ -1758,7 +1787,7 @@ $('#btnFileToAudio').onclick=async ()=>{
     showMsg($('#msgFileAudioEncode'),'Ошибка: '+(e.message||e),'err');
     $('#fileAudioEncodeStatus').textContent='';
   }finally{
-    button.disabled=!state.genericFile;
+    button.disabled=!state.fileAudioFile;
   }
 };
 
@@ -1766,7 +1795,7 @@ $('#btnDlFileAudio').onclick=()=>{
   if(!faEncodedWav)return;
   const url=URL.createObjectURL(new Blob([faEncodedWav],{type:'audio/wav'}));
   const a=document.createElement('a');
-  const base=(state.genericFile?.name||'file').replace(/\.[^.]+$/,'');
+  const base=(state.fileAudioFile?.name||'file').replace(/\.[^.]+$/,'');
   a.href=url;a.download=base+'.c2a-audio.wav';a.click();
   setTimeout(()=>URL.revokeObjectURL(url),5000);
 };
