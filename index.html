@@ -461,43 +461,58 @@ function getAudioCtx(){
 }
 
 function wavBytesToPcm(bytes){
+  if(!(bytes instanceof Uint8Array)) bytes=new Uint8Array(bytes);
+  if(bytes.length<44) throw new Error('WAV слишком короткий: заголовок обрезан');
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if(String.fromCharCode(...bytes.subarray(0,4)) !== 'RIFF') throw new Error('Не RIFF');
-  if(String.fromCharCode(...bytes.subarray(8,12)) !== 'WAVE') throw new Error('Не WAVE');
-  let off = 12, fmt=null, dataOff=-1, dataLen=0;
-  while(off + 8 <= bytes.length){
-    const id = String.fromCharCode(...bytes.subarray(off, off+4));
-    const size = dv.getUint32(off+4, true);
-    if(id === 'fmt '){
-      fmt = {
-        audioFormat: dv.getUint16(off+8, true),
-        numCh: dv.getUint16(off+10, true),
-        sr: dv.getUint32(off+12, true),
-        bits: dv.getUint16(off+22, true)
+  const tag=(o)=>String.fromCharCode(bytes[o],bytes[o+1],bytes[o+2],bytes[o+3]);
+  if(tag(0)!=='RIFF') throw new Error('Не RIFF');
+  if(tag(8)!=='WAVE') throw new Error('Не WAVE');
+  const riffEnd=Math.min(bytes.length, dv.getUint32(4,true)+8);
+  let off=12,fmt=null,dataOff=-1,dataLen=0;
+  while(off+8<=riffEnd){
+    const id=tag(off),size=dv.getUint32(off+4,true),payload=off+8;
+    if(size>riffEnd-payload) throw new Error('Повреждён WAV: блок '+id+' выходит за границы файла');
+    if(id==='fmt '){
+      if(size<16) throw new Error('Повреждён WAV: короткий fmt-заголовок');
+      fmt={
+        audioFormat:dv.getUint16(payload,true),
+        numCh:dv.getUint16(payload+2,true),
+        sr:dv.getUint32(payload+4,true),
+        byteRate:dv.getUint32(payload+8,true),
+        blockAlign:dv.getUint16(payload+12,true),
+        bits:dv.getUint16(payload+14,true)
       };
-    } else if(id === 'data'){ dataOff = off+8; dataLen = size; }
-    off += 8 + size + (size & 1);
-  }
-  if(!fmt || dataOff < 0) throw new Error('Не найден fmt/data');
-  if(fmt.audioFormat !== 1) throw new Error('Только PCM');
-  const {numCh, sr, bits} = fmt;
-  if(bits !== 16 && bits !== 8) throw new Error('Только 8/16-bit PCM');
-  const nSamples = Math.floor(dataLen / (numCh * (bits/8)));
-  const out = new Float32Array(nSamples);
-  if(bits === 16){
-    for(let i=0;i<nSamples;i++){
-      let s=0;
-      for(let c=0;c<numCh;c++) s += dv.getInt16(dataOff + (i*numCh+c)*2, true) / 32768;
-      out[i] = s / numCh;
+    }else if(id==='data'&&dataOff<0){
+      dataOff=payload;dataLen=size;
     }
-  } else {
+    off=payload+size+(size&1);
+  }
+  if(!fmt||dataOff<0) throw new Error('В WAV не найдены блоки fmt/data');
+  const {audioFormat,numCh,sr,bits,blockAlign}=fmt;
+  if(audioFormat!==1) throw new Error('Поддерживается только несжатый PCM WAV');
+  if(!Number.isInteger(numCh)||numCh<1||numCh>8) throw new Error('Некорректное число аудиоканалов');
+  if(!Number.isInteger(sr)||sr<8000||sr>384000) throw new Error('Некорректная частота WAV');
+  if(bits!==16&&bits!==8) throw new Error('Поддерживается только 8/16-bit PCM WAV');
+  const bytesPerSample=bits/8,expectedAlign=numCh*bytesPerSample;
+  if(blockAlign!==expectedAlign) throw new Error('Повреждён WAV: неверный blockAlign');
+  dataLen=Math.min(dataLen,bytes.length-dataOff);
+  const nSamples=Math.floor(dataLen/expectedAlign);
+  if(!nSamples) throw new Error('В WAV нет аудиоданных');
+  const out=new Float32Array(nSamples);
+  if(bits===16){
     for(let i=0;i<nSamples;i++){
-      let s=0;
-      for(let c=0;c<numCh;c++) s += (dv.getUint8(dataOff + (i*numCh+c)) - 128)/128;
-      out[i] = s / numCh;
+      let sum=0,base=dataOff+i*expectedAlign;
+      for(let c=0;c<numCh;c++) sum+=dv.getInt16(base+c*2,true)/32768;
+      out[i]=sum/numCh;
+    }
+  }else{
+    for(let i=0;i<nSamples;i++){
+      let sum=0,base=dataOff+i*expectedAlign;
+      for(let c=0;c<numCh;c++) sum+=(dv.getUint8(base+c)-128)/128;
+      out[i]=sum/numCh;
     }
   }
-  return { pcm: out, sr };
+  return {pcm:out,sr};
 }
 
 /* ============================================================
@@ -2108,7 +2123,8 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
   return {complete:true,meta,raw,received:received.size,crcErrors,skipped,total:meta.totalFrames};
 }
 
-async function faFinishReceive(pcm,sr){
+async function faFinishReceive(pcm,sr,onStage){
+  if(onStage)onStage('поиск C2A-пакетов');
   $('#fileAudioRxProgress').style.width='0%';
   $('#fileAudioRxResult').classList.add('hidden');
   $('#fileAudioRxStatus').textContent='Синхронизация и сборка пакетов...';
@@ -2119,11 +2135,13 @@ async function faFinishReceive(pcm,sr){
     $('#fileAudioRxStatus').textContent='Пакетов: '+stats.received+(stats.total?' / '+stats.total:'')+' · CRC ошибок: '+stats.crcErrors;
   });
   if(result.complete){
+    if(onStage)onStage('подготовка восстановленного файла');
     faRenderReceivedFile(result.meta,result.raw,result);
     $('#fileAudioRxProgress').style.width='100%';
     $('#fileAudioRxStatus').textContent='Файл восстановлен · '+result.received+' пакетов · CRC32 OK';
     showMsg($('#msgFileAudioRx'),'Передача завершена. Исходные байты восстановлены без изменений.','ok');
   }else{
+    if(onStage)onStage('проверка полноты пакетов');
     $('#fileAudioRxStatus').textContent='Получено '+result.received+' из '+result.total+' пакетов';
     showMsg($('#msgFileAudioRx'),'Не все пакеты получены. Повторите приём с начала передачи.','warn');
   }
@@ -2133,20 +2151,24 @@ bindDrop($('#dropFileAudioRx'),$('#fileAudioUpload'),async file=>{
   hideMsg($('#msgFileAudioRx'));
   $('#fileAudioRxResult').classList.add('hidden');
   $('#fileAudioRxStatus').textContent='Загрузка аудио...';
+  let receiveStage='чтение файла';
   try{
     const ab=await file.arrayBuffer();
+    receiveStage='проверка WAV';
     let pcm,sr;
     const bytes=new Uint8Array(ab);
     const isWav=bytes.length>=12&&
       String.fromCharCode(...bytes.subarray(0,4))==='RIFF'&&
       String.fromCharCode(...bytes.subarray(8,12))==='WAVE';
     if(isWav){
+      receiveStage='разбор WAV';
       // C2A-generated WAV is PCM and must be read directly. Sending it through
       // WebAudio decodeAudioData on iOS Safari can fail with a platform
       // DOMException even though the WAV data itself is valid.
       const parsed=wavBytesToPcm(bytes);
       pcm=parsed.pcm;sr=parsed.sr;
     }else{
+      receiveStage='декодирование аудио браузером';
       const ctx=getAudioCtx();
       if(ctx.state==='suspended')await ctx.resume();
       const decoded=await new Promise((resolve,reject)=>{
@@ -2163,11 +2185,13 @@ bindDrop($('#dropFileAudioRx'),$('#fileAudioUpload'),async file=>{
     if(!pcm||!pcm.length||!Number.isFinite(sr)||sr<8000||sr>384000){
       throw new Error('В аудиофайле нет корректного звукового потока');
     }
-    await faFinishReceive(pcm,sr);
+    receiveStage='сборка C2A-потока';
+    await faFinishReceive(pcm,sr,stage=>{receiveStage=stage;});
   }catch(e){
-    console.error(e);
+    console.error('C2A audio receive failed at '+receiveStage,e);
     $('#fileAudioRxStatus').textContent='';
-    showMsg($('#msgFileAudioRx'),'Ошибка приёма: '+(e.message||e),'err');
+    const errorName=e&&e.name&&e.name!=='Error'?' ('+e.name+')':'';
+    showMsg($('#msgFileAudioRx'),'Ошибка приёма · '+receiveStage+errorName+': '+(e.message||e),'err');
   }
 });
 
