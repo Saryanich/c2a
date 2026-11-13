@@ -98,10 +98,10 @@
     <div class="panel">
       <h2>1. Загрузка файла</h2>
       <div id="dropEnc" class="drop">
-        Перетащите фото или аудио сюда либо нажмите для выбора<br>
-        <span class="muted">Фото · MP3 · WAV · FLAC · AAC · M4A · OGG · OPUS · AIFF</span>
+        Перетащите файл сюда или нажмите для выбора<br>
+        <span class="muted">Только фото и аудио</span>
       </div>
-      <input id="fileEnc" type="file" class="hidden" accept="audio/*,image/*,.mp3,.wav,.flac,.aac,.m4a,.ogg,.oga,.opus,.weba,.aiff,.aif,.caf,.amr,.mid,.midi,.wma,.ape,.alac,.ac3,.dts,.au,.ra,.tta,.mpc,.3gp,.jpg,.jpeg,.png,.gif,.bmp,.webp,.avif,.heic,.heif,.tif,.tiff,.ico,.svg,.jxl,.dng,.cr2,.nef,.arw,.rw2,.orf,.pef,.srw">
+      <input id="fileEnc" type="file" class="hidden" accept=".jpg,.jpeg,.png,.mp3,.wav,.mp4">
       <div id="msgEnc" class="msg"></div>
 
       <div id="encInfo" class="hidden" style="margin-top:14px">
@@ -148,12 +148,12 @@
   <section id="tab-fileaudio" class="tabpane hidden">
     <div class="panel">
       <h2>File → Audio</h2>
-      <div id="dropFileAudio" class="drop">Перетащите фотографию сюда или нажмите для выбора<br><span class="muted">JPG · PNG · GIF · BMP · WEBP · AVIF · HEIC · TIFF · SVG</span></div>
-      <input id="fileAudioInput" type="file" class="hidden" accept="image/*,.jpg,.jpeg,.png,.gif,.bmp,.webp,.avif,.heic,.heif,.tif,.tiff,.ico,.svg,.jxl,.dng,.cr2,.nef,.arw,.rw2,.orf,.pef,.srw">
+      <div id="dropFileAudio" class="drop">Перетащите фото сюда или нажмите для выбора<br><span class="muted">Только фото и текст</span></div>
+      <input id="fileAudioInput" type="file" class="hidden" accept=".jpg,.jpeg,.png">
       <div class="field" style="margin-top:14px">
         <label for="fileAudioText">Или введите текст</label>
         <textarea id="fileAudioText" rows="5" maxlength="262144" placeholder="Введите текст для преобразования в аудио..."></textarea>
-        <div class="muted">Принимается именно введённый текст, а не TXT/MD/JSON и другие текстовые файлы. Максимум 256 КБ.</div>
+        <div class="muted">Текст вводится здесь, не загружается отдельным файлом. Максимум 256 КБ.</div>
       </div>
       <div id="fileAudioSelected" class="status"></div>
       <div class="row" style="margin-top:12px">
@@ -767,9 +767,9 @@ function bindDrop(dropEl, inputEl, handler){
   });
 }
 
-const AUDIO_EXT = ['mp3','wav','flac','aac','m4a','ogg','oga','opus','weba','aiff','aif','caf','amr','mid','midi','wma','ape','alac','ac3','dts','au','ra','tta','mpc','3gp'];
+const AUDIO_EXT = ['mp3','wav'];
 const VIDEO_EXT = ['mp4','mov','webm','m4v','mkv','avi','ogv'];
-const IMG_EXT = ['jpg','jpeg','png','gif','bmp','webp','avif','heic','heif','svg','tif','tiff','ico','jxl','dng','cr2','nef','arw','rw2','orf','pef','srw'];
+const IMG_EXT = ['jpg','jpeg','png'];
 const TEXT_EXT = ['txt','md','json','csv','xml','html','css','js','py'];
 function isImageFile(file){return file.type.startsWith('image/')||IMG_EXT.includes(fileExt(file.name));}
 function isTextFile(file){return file.type.startsWith('text/')||['application/json','application/xml'].includes(file.type)||TEXT_EXT.includes(fileExt(file.name));}
@@ -790,9 +790,9 @@ function setFileAudioSource(file,label){
 }
 
 bindDrop($('#dropFileAudio'), $('#fileAudioInput'), file=>{
-  if(!isImageFile(file)){
+  if(!['jpg','jpeg','png'].includes(fileExt(file.name))){
     state.fileAudioFile=null;$('#btnFileToAudio').disabled=true;
-    showMsg($('#msgFileAudioEncode'),'В File → Audio можно загрузить только фотографию. Для текста используйте поле ввода ниже.','err');return;
+    showMsg($('#msgFileAudioEncode'),'Поддерживаются только фото JPG, JPEG и PNG. Текст вводится в поле ниже.','err');return;
   }
   $('#fileAudioText').value='';
   setFileAudioSource(file,file.name);
@@ -820,11 +820,13 @@ bindDrop($('#dropEnc'), $('#fileEnc'), async file=>{
   hideMsg($('#msgEnc')); hideMsg($('#msgEnc2')); $('#encResult').classList.add('hidden');
   state.genericFile=null;$('#btnFileToAudio').disabled=true;
   const ext=fileExt(file.name);
-  if(!isAudioFile(file)&&!isImageFile(file)){
-    showMsg($('#msgEnc'),'Для File → Code подходят только фотографии и аудиофайлы. Текстовые файлы используйте в режиме File → Audio.','err');
+  const isCodePhoto=['jpg','jpeg','png'].includes(ext);
+  const isCodeAudio=['mp3','wav','mp4'].includes(ext);
+  if(!isCodePhoto&&!isCodeAudio){
+    showMsg($('#msgEnc'),'Поддерживаются только фото и аудио: JPG, JPEG, PNG, MP3, WAV и MP4.','err');
     $('#btnEncode').disabled=true;return;
   }
-  if(isImageFile(file)){
+  if(isCodePhoto){
     state.genericFile=file; state.encFileInfo={name:file.name,type:'фото'}; state.encOriginalFileSize=file.size;
     $('#btnDlFileAudio').disabled=true;faEncodedWav=null;$('#fileAudioPreview').classList.add('hidden');
     const kv=$('#encInfoKv'); kv.innerHTML='';
