@@ -1915,8 +1915,8 @@ function faLocateFrame(pcm,onset){
   const from=Math.max(0,onset-FA_SPB*4);
   const to=Math.min(pcm.length-expected.length*FA_SPB,onset+FA_SPB*4);
   for(let start=from;start<=to;start++){
-    let decoded;
-    try{decoded=faDecodeSymbolsAdaptive(pcm,start,expected.length,null).symbols;}
+    let track,decoded;
+    try{track=faDecodeSymbolsAdaptive(pcm,start,expected.length,null);decoded=track.symbols;}
     catch(e){continue;}
     let errors=0,syncErrors=0,score=0;
     for(let i=0;i<expected.length;i++){
@@ -1931,7 +1931,7 @@ function faLocateFrame(pcm,onset){
     if(errors<bestErrors||
        (errors===bestErrors&&syncErrors<bestSyncErrors)||
        (errors===bestErrors&&syncErrors===bestSyncErrors&&score>bestScore)){
-      bestErrors=errors;bestSyncErrors=syncErrors;bestScore=score;bestStart=start;bestBodyStart=decoded.lastStart+FA_SPB;
+      bestErrors=errors;bestSyncErrors=syncErrors;bestScore=score;bestStart=start;bestBodyStart=track.lastStart+FA_SPB;
     }
   }
   return bestErrors<=10&&bestSyncErrors<=3?{start:bestStart,bodyStart:bestBodyStart,errors:bestErrors,confidence:bestScore}:null;
@@ -2018,10 +2018,8 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
     for(let shift=-FA_SPB*2;shift<=FA_SPB*2;shift++){
       const candidateStart=located.bodyStart+shift;
       try{
-        // First test the header with fixed symbol boundaries; this avoids the
-        // adaptive clock tracker drifting while the short header is inspected.
-        // Decode the short header with clock tracking as well: fixed windows
-        // can lose the magic bytes after even a small acoustic clock mismatch.
+        // Decode the short header with clock tracking: fixed windows can lose
+        // the magic bytes after even a small acoustic clock mismatch.
         const headerTrack=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
         const bytes=faSymbolsToBytes(headerTrack.symbols);
         const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
