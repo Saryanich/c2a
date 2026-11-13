@@ -2038,21 +2038,49 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
     // Acoustic playback and resampling can shift the first detected sample.
     // Try nearby symbol boundaries and accept only a structurally valid C2AF header.
     headerSearch:{
-      // Try exact timing first (generated WAV), then tracked timing (microphone).
+      // A merely plausible header is not enough: verify its complete packet CRC
+      // before accepting an alignment, otherwise a shifted decode can lock onto
+      // a false C2AF header and make every following frame disappear.
       const bases=[located.bodyStart,located.trackedBodyStart].filter((v,i,a)=>Number.isInteger(v)&&a.indexOf(v)===i);
       for(const baseStart of bases){
         for(let shift=-FA_SPB*2;shift<=FA_SPB*2;shift++){
           const candidateStart=baseStart+shift;
-          try{
-            const headerTrack=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
-            const bytes=faSymbolsToBytes(headerTrack.symbols);
+          let bytes=null,track=null;
+          try{bytes=faBytesFromPcm(pcm,candidateStart,16);}catch(e){}
+          if(bytes){
             const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
             const magic=bytes[0]===0x43&&bytes[1]===0x32&&bytes[2]===0x41&&bytes[3]===0x46;
             const candidateType=bytes[5],candidateTotal=dv.getUint32(10,true),candidateLen=dv.getUint16(14,true);
             const candidateSequence=dv.getUint32(6,true);
             if(magic&&bytes[4]===1&&(candidateType===0||candidateType===1)&&candidateLen<=1024&&candidateTotal>0&&candidateTotal<=1000&&candidateSequence<candidateTotal){
-              frameStart=candidateStart;headerSymbols=headerTrack.symbols;headerDecoded=headerTrack;header=bytes;
-              type=candidateType;sequence=candidateSequence;total=candidateTotal;payloadLen=candidateLen;break headerSearch;
+              const packetLength=16+candidateLen+4;
+              try{
+                const full=faBytesFromPcm(pcm,candidateStart,packetLength);
+                const fullDv=new DataView(full.buffer,full.byteOffset,full.byteLength);
+                if(fullDv.getUint32(16+candidateLen,true)===crc32(full.subarray(0,16+candidateLen))){
+                  frameStart=candidateStart;header=bytes;headerDecoded=null;headerSymbols=null;
+                  type=candidateType;sequence=candidateSequence;total=candidateTotal;payloadLen=candidateLen;break headerSearch;
+                }
+              }catch(e){}
+            }
+          }
+          // Microphone recordings may have clock drift. Use adaptive decoding,
+          // but still require a valid CRC over the entire packet.
+          try{
+            track=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
+            bytes=faSymbolsToBytes(track.symbols);
+            const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+            const magic=bytes[0]===0x43&&bytes[1]===0x32&&bytes[2]===0x41&&bytes[3]===0x46;
+            const candidateType=bytes[5],candidateTotal=dv.getUint32(10,true),candidateLen=dv.getUint16(14,true);
+            const candidateSequence=dv.getUint32(6,true);
+            if(magic&&bytes[4]===1&&(candidateType===0||candidateType===1)&&candidateLen<=1024&&candidateTotal>0&&candidateTotal<=1000&&candidateSequence<candidateTotal){
+              const packetTrack=faDecodeSymbolsAdaptive(pcm,candidateStart,(16+candidateLen+4)*4,null);
+              const full=faSymbolsToBytes(packetTrack.symbols);
+              const fullDv=new DataView(full.buffer,full.byteOffset,full.byteLength);
+              if(fullDv.getUint32(16+candidateLen,true)===crc32(full.subarray(0,16+candidateLen))){
+                frameStart=candidateStart;headerSymbols=track.symbols;headerDecoded=track;header=bytes;
+                type=candidateType;sequence=candidateSequence;total=candidateTotal;payloadLen=candidateLen;break headerSearch;
+              }
             }
           }catch(e){}
         }
