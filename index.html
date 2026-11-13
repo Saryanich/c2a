@@ -1921,7 +1921,7 @@ function faFindSignalStart(pcm,from){
 }
 
 function faLocateFrame(pcm,onset){
-  let bestStart=-1,bestBodyStart=-1,bestErrors=999,bestSyncErrors=999,bestScore=-1;
+  let bestStart=-1,bestBodyStart=-1,bestTrackedBodyStart=-1,bestErrors=999,bestSyncErrors=999,bestScore=-1;
   const expected=new Uint8Array(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length);
   expected.set(FA_PREAMBLE,0);
   expected.set(FA_SYNC_SYMBOLS,FA_PREAMBLE.length);
@@ -1946,10 +1946,17 @@ function faLocateFrame(pcm,onset){
     if(errors<bestErrors||
        (errors===bestErrors&&syncErrors<bestSyncErrors)||
        (errors===bestErrors&&syncErrors===bestSyncErrors&&score>bestScore)){
-      bestErrors=errors;bestSyncErrors=syncErrors;bestScore=score;bestStart=start;bestBodyStart=track.lastStart+FA_SPB;
+      bestErrors=errors;bestSyncErrors=syncErrors;bestScore=score;bestStart=start;
+      // Prefer the exact symbol grid for generated WAV files. Adaptive tracking
+      // is retained as a fallback for acoustic recordings with clock drift.
+      bestBodyStart=start+expected.length*FA_SPB;
+      bestTrackedBodyStart=track.lastStart+FA_SPB;
     }
   }
-  return bestErrors<=10&&bestSyncErrors<=3?{start:bestStart,bodyStart:bestBodyStart,errors:bestErrors,confidence:bestScore}:null;
+  return bestErrors<=10&&bestSyncErrors<=3?{
+    start:bestStart,bodyStart:bestBodyStart,trackedBodyStart:bestTrackedBodyStart,
+    errors:bestErrors,confidence:bestScore
+  }:null;
 }
 
 function faResample(input,sourceRate,targetRate){
@@ -2030,22 +2037,26 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
     let frameStart=-1,headerSymbols=null,headerDecoded=null,header=null,sequence=0,total=0,payloadLen=0,type=-1;
     // Acoustic playback and resampling can shift the first detected sample.
     // Try nearby symbol boundaries and accept only a structurally valid C2AF header.
-    for(let shift=-FA_SPB*2;shift<=FA_SPB*2;shift++){
-      const candidateStart=located.bodyStart+shift;
-      try{
-        // Decode the short header with clock tracking: fixed windows can lose
-        // the magic bytes after even a small acoustic clock mismatch.
-        const headerTrack=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
-        const bytes=faSymbolsToBytes(headerTrack.symbols);
-        const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
-        const magic=bytes[0]===0x43&&bytes[1]===0x32&&bytes[2]===0x41&&bytes[3]===0x46;
-        const candidateType=bytes[5],candidateTotal=dv.getUint32(10,true),candidateLen=dv.getUint16(14,true);
-        const candidateSequence=dv.getUint32(6,true);
-        if(magic&&bytes[4]===1&&(candidateType===0||candidateType===1)&&candidateLen<=1024&&candidateTotal>0&&candidateTotal<=1000&&candidateSequence<candidateTotal){
-          frameStart=candidateStart;headerSymbols=headerTrack.symbols;headerDecoded=headerTrack;header=bytes;
-          type=candidateType;sequence=candidateSequence;total=candidateTotal;payloadLen=candidateLen;break;
+    headerSearch:{
+      // Try exact timing first (generated WAV), then tracked timing (microphone).
+      const bases=[located.bodyStart,located.trackedBodyStart].filter((v,i,a)=>Number.isInteger(v)&&a.indexOf(v)===i);
+      for(const baseStart of bases){
+        for(let shift=-FA_SPB*2;shift<=FA_SPB*2;shift++){
+          const candidateStart=baseStart+shift;
+          try{
+            const headerTrack=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
+            const bytes=faSymbolsToBytes(headerTrack.symbols);
+            const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+            const magic=bytes[0]===0x43&&bytes[1]===0x32&&bytes[2]===0x41&&bytes[3]===0x46;
+            const candidateType=bytes[5],candidateTotal=dv.getUint32(10,true),candidateLen=dv.getUint16(14,true);
+            const candidateSequence=dv.getUint32(6,true);
+            if(magic&&bytes[4]===1&&(candidateType===0||candidateType===1)&&candidateLen<=1024&&candidateTotal>0&&candidateTotal<=1000&&candidateSequence<candidateTotal){
+              frameStart=candidateStart;headerSymbols=headerTrack.symbols;headerDecoded=headerTrack;header=bytes;
+              type=candidateType;sequence=candidateSequence;total=candidateTotal;payloadLen=candidateLen;break headerSearch;
+            }
+          }catch(e){}
         }
-      }catch(e){}
+      }
     }
     if(frameStart<0){
       skipped++;
