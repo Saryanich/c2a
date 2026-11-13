@@ -1906,7 +1906,7 @@ function faFindSignalStart(pcm,from){
 }
 
 function faLocateFrame(pcm,onset){
-  let bestStart=-1,bestErrors=999,bestSyncErrors=999,bestScore=-1;
+  let bestStart=-1,bestBodyStart=-1,bestErrors=999,bestSyncErrors=999,bestScore=-1;
   const expected=new Uint8Array(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length);
   expected.set(FA_PREAMBLE,0);
   expected.set(FA_SYNC_SYMBOLS,FA_PREAMBLE.length);
@@ -1931,10 +1931,10 @@ function faLocateFrame(pcm,onset){
     if(errors<bestErrors||
        (errors===bestErrors&&syncErrors<bestSyncErrors)||
        (errors===bestErrors&&syncErrors===bestSyncErrors&&score>bestScore)){
-      bestErrors=errors;bestSyncErrors=syncErrors;bestScore=score;bestStart=start;
+      bestErrors=errors;bestSyncErrors=syncErrors;bestScore=score;bestStart=start;bestBodyStart=decoded.lastStart+FA_SPB;
     }
   }
-  return bestErrors<=10&&bestSyncErrors<=3?{start:bestStart,errors:bestErrors,confidence:bestScore}:null;
+  return bestErrors<=10&&bestSyncErrors<=3?{start:bestStart,bodyStart:bestBodyStart,errors:bestErrors,confidence:bestScore}:null;
 }
 
 function faResample(input,sourceRate,targetRate){
@@ -2016,7 +2016,7 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
     // Acoustic playback and resampling can shift the first detected sample.
     // Try nearby symbol boundaries and accept only a structurally valid C2AF header.
     for(let shift=-FA_SPB*2;shift<=FA_SPB*2;shift++){
-      const candidateStart=located.start+shift+FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length;
+      const candidateStart=located.bodyStart+shift;
       try{
         // First test the header with fixed symbol boundaries; this avoids the
         // adaptive clock tracker drifting while the short header is inspected.
