@@ -1910,18 +1910,21 @@ function faLocateFrame(pcm,onset){
   const expected=new Uint8Array(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length);
   expected.set(FA_PREAMBLE,0);
   expected.set(FA_SYNC_SYMBOLS,FA_PREAMBLE.length);
-  // Locate the preamble using fixed symbol windows. Adaptive timing is applied
-  // only after the exact preamble/sync sequence has been identified.
-  const from=Math.max(0,onset-FA_SPB*2);
-  const to=Math.min(pcm.length-expected.length*FA_SPB,onset+FA_SPB*2);
+  // Track symbol timing while locating the preamble. This is essential for
+  // microphone recordings where playback and capture clocks are not identical.
+  const from=Math.max(0,onset-FA_SPB*4);
+  const to=Math.min(pcm.length-expected.length*FA_SPB,onset+FA_SPB*4);
   for(let start=from;start<=to;start++){
+    let decoded;
+    try{decoded=faDecodeSymbolsAdaptive(pcm,start,expected.length,null).symbols;}
+    catch(e){continue;}
     let errors=0,syncErrors=0,score=0;
     for(let i=0;i<expected.length;i++){
-      const info=faSymbolInfo(pcm,start+i*FA_SPB);
-      if(info.symbol!==expected[i]){
+      if(decoded[i]!==expected[i]){
         errors++;
         if(i>=FA_PREAMBLE.length)syncErrors++;
       }
+      const info=faSymbolInfo(pcm,start+i*FA_SPB);
       score+=info.confidence;
       if(errors>10||syncErrors>3)break;
     }
@@ -2017,14 +2020,16 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
       try{
         // First test the header with fixed symbol boundaries; this avoids the
         // adaptive clock tracker drifting while the short header is inspected.
-        const bytes=faBytesFromPcm(pcm,candidateStart,16);
+        // Decode the short header with clock tracking as well: fixed windows
+        // can lose the magic bytes after even a small acoustic clock mismatch.
+        const headerTrack=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
+        const bytes=faSymbolsToBytes(headerTrack.symbols);
         const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
         const magic=bytes[0]===0x43&&bytes[1]===0x32&&bytes[2]===0x41&&bytes[3]===0x46;
         const candidateType=bytes[5],candidateTotal=dv.getUint32(10,true),candidateLen=dv.getUint16(14,true);
         const candidateSequence=dv.getUint32(6,true);
         if(magic&&bytes[4]===1&&(candidateType===0||candidateType===1)&&candidateLen<=1024&&candidateTotal>0&&candidateTotal<=1000&&candidateSequence<candidateTotal){
-          const decoded=faDecodeSymbolsAdaptive(pcm,candidateStart,16*4,null);
-          frameStart=candidateStart;headerSymbols=decoded.symbols;headerDecoded=decoded;header=bytes;
+          frameStart=candidateStart;headerSymbols=headerTrack.symbols;headerDecoded=headerTrack;header=bytes;
           type=candidateType;sequence=candidateSequence;total=candidateTotal;payloadLen=candidateLen;break;
         }
       }catch(e){}
