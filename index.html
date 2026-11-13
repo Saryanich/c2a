@@ -597,7 +597,6 @@ async function decodeC2A(bytes, onProgress){
   const nSavedPerCh = dv.getUint32(20,true);
   const storedCrc = dv.getUint32(32,true);
   if(crc32(bytes.subarray(36)) !== storedCrc) throw new Error('Ошибка CRC32');
-
   let off = 36;
   const savedChans = [];
   for(let c=0;c<channels;c++){
@@ -1197,8 +1196,7 @@ function fskPcmToText(pcm, sr){
     for(let k=0;k<8;k++) v = (v << 1) | manOut[16 + bi*8 + k];
     bytes[bi] = v;
   }
-  let crcRecv = 0;
-  for(let i=0;i<16;i++) crcRecv = (crcRecv << 1) | manOut[16 + len*8 + i];
+  let crcRecv = 0;  for(let i=0;i<16;i++) crcRecv = (crcRecv << 1) | manOut[16 + len*8 + i];
   const crcCalc = crc16(bytes);
   const text = new TextDecoder('utf-8', {fatal:false}).decode(bytes);
   return { text, crcOk: crcRecv === crcCalc, crcRecv, crcCalc,
@@ -1797,8 +1795,7 @@ $('#btnFileToAudio').onclick=async ()=>{
     $('#fileAudioEncodeStatus').textContent='Готово · '+seconds.toFixed(1)+' с · '+wav.length.toLocaleString()+' Б WAV · '+kbps+' кбит/с';
     showMsg($('#msgFileAudioEncode'),'WAV создан. Передавайте его целиком или включите воспроизведение рядом с микрофоном принимающего устройства.','ok');
   }catch(e){
-    console.error(e);
-    showMsg($('#msgFileAudioEncode'),'Ошибка: '+(e.message||e),'err');
+    console.error(e);    showMsg($('#msgFileAudioEncode'),'Ошибка: '+(e.message||e),'err');
     $('#fileAudioEncodeStatus').textContent='';
   }finally{
     button.disabled=!state.fileAudioFile;
@@ -1978,7 +1975,7 @@ function faRenderReceivedFile(meta,raw,stats){
   $('#fileAudioRxDownload').download=meta.name||'received.bin';
   $('#fileAudioRxDownload').textContent='Скачать '+(meta.name||'файл');
   const name=(meta.name||'').toLowerCase();
-  if((meta.type||'').startsWith('image/')||/\.(png|jpe?g|gif|bmp|webp|svg|ico|tiff?)$/.test(name)){
+  if((meta.type||'').startsWith('image/')||/\.(png|jpe?g|gif|bmp|webp|svg|ico|tiff?|heic|heif)$/.test(name)){
     $('#fileAudioRxImage').src=url;
     $('#fileAudioRxImage').classList.remove('hidden');
   }else if((meta.type||'').startsWith('text/')||/\.(txt|md|json|csv|xml|html|css|js|py)$/.test(name)){
@@ -2056,7 +2053,7 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
         }
       }catch(e){}
     }
-    const end=frameStart+(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length+packetLength*4)*FA_SPB;
+    const end=frameStart+packetLength*4*FA_SPB;
     if(end>pcm.length)break;
     if(!packet||receivedCrc!==calculatedCrc){
       crcErrors++;
