@@ -2034,7 +2034,7 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
       cursor=next;
       continue;
     }
-    let frameStart=-1,headerSymbols=null,headerDecoded=null,header=null,sequence=0,total=0,payloadLen=0,type=-1;
+    let frameStart=-1,headerSymbols=null,headerDecoded=null,header=null,verifiedPacket=null,sequence=0,total=0,payloadLen=0,type=-1;
     // Acoustic playback and resampling can shift the first detected sample.
     // Try nearby symbol boundaries and accept only a structurally valid C2AF header.
     headerSearch:{
@@ -2058,7 +2058,7 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
                 const full=faBytesFromPcm(pcm,candidateStart,packetLength);
                 const fullDv=new DataView(full.buffer,full.byteOffset,full.byteLength);
                 if(fullDv.getUint32(16+candidateLen,true)===crc32(full.subarray(0,16+candidateLen))){
-                  frameStart=candidateStart;header=bytes;headerDecoded=null;headerSymbols=null;
+                  frameStart=candidateStart;header=bytes;headerDecoded=null;headerSymbols=null;verifiedPacket=full;
                   type=candidateType;sequence=candidateSequence;total=candidateTotal;payloadLen=candidateLen;break headerSearch;
                 }
               }catch(e){}
@@ -2078,7 +2078,7 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
               const full=faSymbolsToBytes(packetTrack.symbols);
               const fullDv=new DataView(full.buffer,full.byteOffset,full.byteLength);
               if(fullDv.getUint32(16+candidateLen,true)===crc32(full.subarray(0,16+candidateLen))){
-                frameStart=candidateStart;headerSymbols=track.symbols;headerDecoded=track;header=bytes;
+                frameStart=candidateStart;headerSymbols=track.symbols;headerDecoded=track;header=bytes;verifiedPacket=full;
                 type=candidateType;sequence=candidateSequence;total=candidateTotal;payloadLen=candidateLen;break headerSearch;
               }
             }
@@ -2093,34 +2093,13 @@ function faDecodeFileStream(sourcePcm,sourceRate,onProgress){
       cursor=next;
       continue;
     }
-    // A generated WAV has an exact sample clock. Decode its complete packet
-    // with fixed symbol spacing first; adaptive tracking can drift on clean WAVs.
-    let packet=null;
+    // Reuse the exact packet whose CRC was verified during header search.
+    // Re-decoding it from a different timing origin can corrupt a valid frame.
+    const packet=verifiedPacket;
     const packetLength=16+payloadLen+4;
-    try{packet=faBytesFromPcm(pcm,frameStart,packetLength);}catch(e){}
-    let packetDv=null;
-    let receivedCrc=0,calculatedCrc=0;
-    if(packet){
-      packetDv=new DataView(packet.buffer,packet.byteOffset,packet.byteLength);
-      receivedCrc=packetDv.getUint32(16+payloadLen,true);
-      calculatedCrc=crc32(packet.subarray(0,16+payloadLen));
-    }
-    // Keep adaptive decoding as a fallback for microphone recordings with
-    // sample-clock drift, but never prefer it over a CRC-valid fixed decode.
-    if(!packet||receivedCrc!==calculatedCrc){
-      try{
-        const adaptive=faDecodeSymbolsAdaptive(pcm,frameStart+FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length,packetLength*4,null);
-        const adaptivePacket=faSymbolsToBytes(adaptive.symbols);
-        const adaptiveDv=new DataView(adaptivePacket.buffer,adaptivePacket.byteOffset,adaptivePacket.byteLength);
-        const adaptiveCrc=adaptiveDv.getUint32(16+payloadLen,true);
-        if(adaptiveCrc===crc32(adaptivePacket.subarray(0,16+payloadLen))){
-          packet=adaptivePacket;
-          packetDv=adaptiveDv;
-          receivedCrc=adaptiveCrc;
-          calculatedCrc=adaptiveCrc;
-        }
-      }catch(e){}
-    }
+    const packetDv=packet?new DataView(packet.buffer,packet.byteOffset,packet.byteLength):null;
+    const receivedCrc=packet?packetDv.getUint32(16+payloadLen,true):0;
+    const calculatedCrc=packet?crc32(packet.subarray(0,16+payloadLen)):0;
     const end=frameStart+packetLength*4*FA_SPB;
     if(end>pcm.length)break;
     if(!packet||receivedCrc!==calculatedCrc){
