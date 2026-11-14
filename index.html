@@ -149,7 +149,7 @@
     <div class="panel">
       <h2>File → Audio</h2>
       <div id="dropFileAudio" class="drop">Перетащите фото сюда или нажмите для выбора<br><span class="muted">Только фото и текст</span></div>
-      <input id="fileAudioInput" type="file" class="hidden" accept=".jpg,.jpeg,.png">
+      <input id="fileAudioInput" type="file" class="hidden" accept="image/*,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,.tif,.tiff,.heic,.heif">
       <div class="field" style="margin-top:14px">
         <label for="fileAudioText">Или введите текст</label>
         <textarea id="fileAudioText" rows="5" maxlength="262144" placeholder="Введите текст для преобразования в аудио..."></textarea>
@@ -805,9 +805,12 @@ function setFileAudioSource(file,label){
 }
 
 bindDrop($('#dropFileAudio'), $('#fileAudioInput'), file=>{
-  if(!['jpg','jpeg','png'].includes(fileExt(file.name))){
+  const ext=fileExt(file.name);
+  const looksLikeImage=(file.type||'').startsWith('image/')||
+    ['jpg','jpeg','png','webp','gif','bmp','avif','tif','tiff','heic','heif','svg'].includes(ext);
+  if(!looksLikeImage){
     state.fileAudioFile=null;$('#btnFileToAudio').disabled=true;
-    showMsg($('#msgFileAudioEncode'),'Поддерживаются только фото JPG, JPEG и PNG. Текст вводится в поле ниже.','err');return;
+    showMsg($('#msgFileAudioEncode'),'Выберите изображение. Текст вводится в поле ниже.','err');return;
   }
   $('#fileAudioText').value='';
   setFileAudioSource(file,file.name);
@@ -1670,7 +1673,7 @@ const FA_OSC = FA_FREQS.map(freq=>{
 });
 const FA_AMP = 0.58;
 const FA_CHUNK_SIZE = 768;
-const FA_MAX_FILE_SIZE = 262144;
+const FA_MAX_FILE_SIZE = Number.MAX_SAFE_INTEGER; // исходный файл изображения не ограничиваем; фото будет пережато под лимит аудиозаписи
 const FA_GAP_SAMPLES = Math.round(0.065 * FA_SR);
 const FA_PREAMBLE = new Uint8Array(48);
 for(let i=0;i<FA_PREAMBLE.length;i++) FA_PREAMBLE[i] = (i & 1) ? 3 : 0;
@@ -1769,15 +1772,76 @@ async function faMakeAudioSamples(frames,onProgress){
 let faEncodedWav=null;
 let faEncodedUrl=null;
 
-$('#btnFileToAudio').onclick=async ()=>{
-  const button=$('#btnFileToAudio'),file=state.fileAudioFile;
-  if(!file)return;
-  if(!file.size){
-    showMsg($('#msgFileAudioEncode'),'Пустой файл передавать не нужно.','err');
-    return;
+async function faCompressImageForOneMinute(file){
+  let bitmap=null;
+  try{
+    if(typeof createImageBitmap==='function') bitmap=await createImageBitmap(file);
+    let sourceWidth=bitmap?bitmap.width:0,sourceHeight=bitmap?bitmap.height:0;
+    let sourceUrl=null,img=null;
+    if(!bitmap){
+      sourceUrl=URL.createObjectURL(file);
+      img=await new Promise((resolve,reject)=>{
+        const image=new Image();
+        image.onload=()=>resolve(image);
+        image.onerror=()=>reject(new Error('Браузер не смог открыть это изображение'));
+        image.src=sourceUrl;
+      });
+      sourceWidth=img.naturalWidth;sourceHeight=img.naturalHeight;
+    }
+    if(!sourceWidth||!sourceHeight)throw new Error('Не удалось определить разрешение изображения');
+    const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{alpha:false});
+    if(!ctx)throw new Error('Canvas недоступен в этом браузере');
+    const maxSideSteps=[4096,3072,2560,2048,1600,1280,1024,800,640,480,360,256];
+    const qualities=[0.86,0.78,0.70,0.62,0.54,0.46,0.38,0.30];
+    let best=null,bestSeconds=Infinity;
+    for(const maxSide of maxSideSteps){
+      const scale=Math.min(1,maxSide/Math.max(sourceWidth,sourceHeight));
+      const w=Math.max(1,Math.round(sourceWidth*scale)),h=Math.max(1,Math.round(sourceHeight*scale));
+      canvas.width=w;canvas.height=h;
+      ctx.fillStyle='#fff';ctx.fillRect(0,0,w,h);
+      if(bitmap)ctx.drawImage(bitmap,0,0,w,h);else ctx.drawImage(img,0,0,w,h);
+      for(const quality of qualities){
+        const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
+        if(!blob)continue;
+        const name=(file.name||'image').replace(/\.[^.]+$/,'')+'.jpg';
+        const converted=new File([blob],name,{type:'image/jpeg',lastModified:Date.now()});
+        const rawSize=converted.size;
+        const meta={name,type:'image/jpeg',size:rawSize,chunkSize:FA_CHUNK_SIZE,
+          totalFrames:Math.ceil(rawSize/FA_CHUNK_SIZE),fileCrc32:0,compressedFrom:file.name||'image',
+          originalType:file.type||'application/octet-stream',originalWidth:sourceWidth,originalHeight:sourceHeight,
+          encodedWidth:w,encodedHeight:h,quality};
+        const metaBytes=new TextEncoder().encode(JSON.stringify(meta));
+        const totalFrames=meta.totalFrames;
+        const metaFrameSymbols=(FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length+(20+metaBytes.length)*4);
+        let symbols=metaFrameSymbols;
+        for(let i=0;i<totalFrames;i++){
+          const chunkLen=Math.min(FA_CHUNK_SIZE,rawSize-i*FA_CHUNK_SIZE);
+          symbols+=FA_PREAMBLE.length+FA_SYNC_SYMBOLS.length+(20+chunkLen)*4;
+        }
+        const seconds=(FA_GAP_SAMPLES*(totalFrames+2)+symbols*FA_SPB)/FA_SR;
+        if(seconds<bestSeconds){bestSeconds=seconds;best={file:converted,meta,seconds,w,h,quality};}
+        if(seconds<=60){
+          if(sourceUrl)URL.revokeObjectURL(sourceUrl);
+          if(bitmap)bitmap.close();
+          return best;
+        }
+      }
+    }
+    if(sourceUrl)URL.revokeObjectURL(sourceUrl);
+    if(bitmap)bitmap.close();
+    if(best)throw new Error('Даже при сильном сжатии изображение занимает '+best.seconds.toFixed(1)+' с. Для лимита 60 секунд уменьшите исходное изображение.');
+    throw new Error('Не удалось сжать изображение в поддерживаемый формат');
+  }catch(error){
+    if(bitmap)try{bitmap.close();}catch(_){}
+    throw error;
   }
-  if(file.size>FA_MAX_FILE_SIZE){
-    showMsg($('#msgFileAudioEncode'),'Файл больше 256 КБ. Уменьшите размер изображения или файла.','err');
+}
+
+$('#btnFileToAudio').onclick=async ()=>{
+  const button=$('#btnFileToAudio'),selected=state.fileAudioFile;
+  if(!selected)return;
+  if(!selected.size){
+    showMsg($('#msgFileAudioEncode'),'Пустой файл передавать не нужно.','err');
     return;
   }
   button.disabled=true;
@@ -1786,6 +1850,14 @@ $('#btnFileToAudio').onclick=async ()=>{
   $('#fileAudioPreview').classList.add('hidden');
   hideMsg($('#msgFileAudioEncode'));
   try{
+    let file=selected,compressionInfo='';
+    if((selected.type||'').startsWith('image/')||
+      ['jpg','jpeg','png','webp','gif','bmp','avif','tif','tiff','heic','heif','svg'].includes(fileExt(selected.name))){
+      $('#fileAudioEncodeStatus').textContent='Подбор разрешения и качества для лимита 60 секунд...';
+      const compressed=await faCompressImageForOneMinute(selected);
+      file=compressed.file;
+      compressionInfo=' · '+compressed.w+'×'+compressed.h+' · JPEG '+Math.round(compressed.quality*100)+'% · сжато из '+(selected.size/1024/1024).toFixed(2)+' МБ';
+    }
     const raw=new Uint8Array(await file.arrayBuffer());
     const totalFrames=Math.ceil(raw.length/FA_CHUNK_SIZE);
     const meta={
@@ -1794,7 +1866,8 @@ $('#btnFileToAudio').onclick=async ()=>{
       size:raw.length,
       chunkSize:FA_CHUNK_SIZE,
       totalFrames:totalFrames,
-      fileCrc32:crc32(raw)
+      fileCrc32:crc32(raw),
+      visuallyCompressed:!!compressionInfo
     };
     const metaBytes=new TextEncoder().encode(JSON.stringify(meta));
     const frames=[faMakeFrame(0,0,totalFrames,metaBytes)];
@@ -1806,6 +1879,8 @@ $('#btnFileToAudio').onclick=async ()=>{
     const pcm=await faMakeAudioSamples(frames,p=>{
       $('#fileAudioEncodeProgress').style.width=(p*85).toFixed(1)+'%';
     });
+    const seconds=pcm.length/FA_SR;
+    if(seconds>60.05)throw new Error('Не удалось уложить запись в 60 секунд ('+seconds.toFixed(1)+' с).');
     $('#fileAudioEncodeStatus').textContent='Сборка WAV...';
     await new Promise(resolve=>setTimeout(resolve,0));
     const wav=faMonoToWav(pcm);
@@ -1816,12 +1891,11 @@ $('#btnFileToAudio').onclick=async ()=>{
     $('#fileAudioPreview').classList.remove('hidden');
     $('#btnDlFileAudio').disabled=false;
     $('#fileAudioEncodeProgress').style.width='100%';
-    const seconds=pcm.length/FA_SR;
     const kbps=(raw.length*8/seconds/1000).toFixed(2);
-    $('#fileAudioEncodeStatus').textContent='Готово · '+seconds.toFixed(1)+' с · '+wav.length.toLocaleString()+' Б WAV · '+kbps+' кбит/с';
-    showMsg($('#msgFileAudioEncode'),'WAV создан. Передавайте его целиком или включите воспроизведение рядом с микрофоном принимающего устройства.','ok');
+    $('#fileAudioEncodeStatus').textContent='Готово · '+seconds.toFixed(1)+' / 60 с · '+wav.length.toLocaleString()+' Б WAV'+compressionInfo+' · '+kbps+' кбит/с';
+    showMsg($('#msgFileAudioEncode'),(compressionInfo?'Фото сжато для передачи; визуально похоже на оригинал, исходные байты не сохраняются. ':'')+'WAV создан. Передавайте его целиком или включите воспроизведение рядом с микрофоном принимающего устройства.','ok');
   }catch(e){
-    console.error(e);    showMsg($('#msgFileAudioEncode'),'Ошибка: '+(e.message||e),'err');
+    console.error(e);showMsg($('#msgFileAudioEncode'),'Ошибка: '+(e.message||e),'err');
     $('#fileAudioEncodeStatus').textContent='';
   }finally{
     button.disabled=!state.fileAudioFile;
