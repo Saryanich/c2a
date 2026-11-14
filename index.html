@@ -1775,7 +1775,9 @@ let faEncodedUrl=null;
 async function faCompressImageForOneMinute(file){
   let bitmap=null;
   try{
-    if(typeof createImageBitmap==='function') bitmap=await createImageBitmap(file);
+    if(typeof createImageBitmap==='function'){
+      try{bitmap=await createImageBitmap(file);}catch(_){bitmap=null;}
+    }
     let sourceWidth=bitmap?bitmap.width:0,sourceHeight=bitmap?bitmap.height:0;
     let sourceUrl=null,img=null;
     if(!bitmap){
@@ -1791,8 +1793,8 @@ async function faCompressImageForOneMinute(file){
     if(!sourceWidth||!sourceHeight)throw new Error('Не удалось определить разрешение изображения');
     const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{alpha:false});
     if(!ctx)throw new Error('Canvas недоступен в этом браузере');
-    const maxSideSteps=[4096,3072,2560,2048,1600,1280,1024,800,640,480,360,256];
-    const qualities=[0.86,0.78,0.70,0.62,0.54,0.46,0.38,0.30];
+    const maxSideSteps=[4096,3072,2560,2048,1600,1280,1024,800,640,480,360,256,192,128,96,64];
+    const qualities=[0.86,0.78,0.70,0.62,0.54,0.46,0.38,0.30,0.22,0.16];
     let best=null,bestSeconds=Infinity;
     for(const maxSide of maxSideSteps){
       const scale=Math.min(1,maxSide/Math.max(sourceWidth,sourceHeight));
